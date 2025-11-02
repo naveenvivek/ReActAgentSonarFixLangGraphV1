@@ -43,7 +43,6 @@ env/
 Thumbs.db
 
 # Generated files
-*.png
 *.mmd
 *.ipynb
 test_workflow_diagram.png
