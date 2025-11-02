@@ -59,6 +59,11 @@ current_workflow.png
 # Cleanup scripts
 cleanup_optional_files.py
 minimal_files_list.txt
+git_commit_commands.sh
+
+# Test/generated mermaid files
+sonar_langgraph_flow*.mermaid
+sonar_langgraph_flow*.png
 
 # Kiro IDE configuration (contains sensitive tokens)
 .kiro/
