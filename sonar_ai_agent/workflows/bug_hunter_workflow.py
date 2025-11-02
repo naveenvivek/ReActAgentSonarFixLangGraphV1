@@ -72,9 +72,7 @@ class BugHunterWorkflow:
         workflow.add_node("prepare_repository", self._prepare_repository_node)
         workflow.add_node("connect_sonarqube", self._connect_sonarqube_node)
         workflow.add_node("fetch_issues", self._fetch_issues_node)
-        workflow.add_node("analyze_issue", self._analyze_issue_node)
-        workflow.add_node("create_fix_plan", self._create_fix_plan_node)
-        workflow.add_node("update_langfuse", self._update_langfuse_node)
+        workflow.add_node("process_issues", self._process_issues_node)
         workflow.add_node("finalize", self._finalize_node)
         workflow.add_node("handle_error", self._handle_error_node)
         
@@ -83,24 +81,8 @@ class BugHunterWorkflow:
         
         # Add edges
         workflow.add_edge("initialize", "prepare_repository")
-        workflow.add_edge("prepare_repository", "connect_sonarqube")
-        workflow.add_edge("connect_sonarqube", "fetch_issues")
-        workflow.add_edge("fetch_issues", "analyze_issue")
-        workflow.add_edge("analyze_issue", "create_fix_plan")
-        workflow.add_edge("create_fix_plan", "update_langfuse")
         
-        # Conditional edges
-        workflow.add_conditional_edges(
-            "update_langfuse",
-            self._should_continue_processing,
-            {
-                "continue": "analyze_issue",
-                "finalize": "finalize",
-                "error": "handle_error"
-            }
-        )
-        
-        # Error handling edges
+        # Error handling edges with conditional routing
         workflow.add_conditional_edges(
             "prepare_repository",
             self._check_for_errors,
@@ -115,15 +97,19 @@ class BugHunterWorkflow:
         
         workflow.add_conditional_edges(
             "fetch_issues",
-            self._check_for_errors,
-            {"continue": "analyze_issue", "error": "handle_error"}
+            self._check_issues_available,
+            {"process": "process_issues", "finalize": "finalize", "error": "handle_error"}
         )
+        
+        # Process issues and finalize
+        workflow.add_edge("process_issues", "finalize")
         
         # End points
         workflow.add_edge("finalize", END)
         workflow.add_edge("handle_error", END)
         
-        return workflow.compile()
+        # Compile with recursion limit
+        return workflow.compile(checkpointer=None, debug=False)
     
     @observe(name="bug_hunter_initialize")
     def _initialize_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
@@ -251,132 +237,88 @@ class BugHunterWorkflow:
         
         return state
     
-    @observe(name="bug_hunter_analyze_issue")
-    def _analyze_issue_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Analyze current issue with LLM."""
-        current_index = state["current_issue_index"]
+    @observe(name="bug_hunter_process_issues")
+    def _process_issues_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
+        """Process all issues in batch to avoid recursion."""
         issues = state["sonar_issues"]
+        max_issues = min(len(issues), self.agent.max_issues_per_run)
         
-        if current_index >= len(issues):
-            state["workflow_status"] = "completed"
-            return state
+        self.logger.info(f"🔄 Processing {max_issues} issues in batch")
         
-        current_issue = issues[current_index]
-        self.logger.info(f"🔍 Analyzing issue {current_index + 1}/{len(issues)}: {current_issue.key}")
-        
-        try:
-            # Get code context
-            code_context = self.agent._get_code_context(current_issue)
-            if not code_context:
-                self.logger.warning(f"⚠️ Could not get code context for issue {current_issue.key}")
-                state["current_issue_index"] += 1
-                return state
+        for i in range(max_issues):
+            current_issue = issues[i]
+            self.logger.info(f"🔍 Analyzing issue {i + 1}/{max_issues}: {current_issue.key}")
             
-            # Analyze with LLM
-            analysis = self.agent._analyze_issue_with_llm(current_issue, code_context)
-            if not analysis:
-                self.logger.warning(f"⚠️ LLM analysis failed for issue {current_issue.key}")
-                state["current_issue_index"] += 1
-                return state
-            
-            # Store analysis in state for next node
-            state["current_analysis"] = {
-                "issue": current_issue,
-                "code_context": code_context,
-                "analysis": analysis
-            }
-            
-            self.logger.info(f"✅ Issue analysis completed for {current_issue.key}")
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to analyze issue {current_issue.key}: {e}")
-            state["current_issue_index"] += 1
-        
-        return state
-    
-    @observe(name="bug_hunter_create_fix_plan")
-    def _create_fix_plan_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Create fix plan from analysis."""
-        if "current_analysis" not in state:
-            state["current_issue_index"] += 1
-            return state
-        
-        analysis_data = state["current_analysis"]
-        issue = analysis_data["issue"]
-        code_context = analysis_data["code_context"]
-        analysis = analysis_data["analysis"]
-        
-        self.logger.info(f"📋 Creating fix plan for issue {issue.key}")
-        
-        try:
-            fix_plan = self.agent._create_fix_plan(issue, code_context, analysis)
-            if fix_plan:
-                state["fix_plans"].append(fix_plan)
-                state["processed_issues"] += 1
+            try:
+                # Get code context
+                code_context = self.agent._get_code_context(current_issue)
+                if not code_context:
+                    self.logger.warning(f"⚠️ Could not get code context for issue {current_issue.key}")
+                    continue
                 
-                self.logger.info(f"✅ Fix plan created for {issue.key} (confidence: {fix_plan.confidence_score:.2f})")
-            else:
-                self.logger.warning(f"⚠️ Failed to create fix plan for {issue.key}")
-            
-            # Clean up current analysis
-            del state["current_analysis"]
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create fix plan for {issue.key}: {e}")
+                # Analyze with LLM
+                analysis = self.agent._analyze_issue_with_llm(current_issue, code_context)
+                if not analysis:
+                    self.logger.warning(f"⚠️ LLM analysis failed for issue {current_issue.key}")
+                    continue
+                
+                # Create fix plan
+                fix_plan = self.agent._create_fix_plan(current_issue, code_context, analysis)
+                if fix_plan:
+                    state["fix_plans"].append(fix_plan)
+                    state["processed_issues"] += 1
+                    
+                    self.logger.info(f"✅ Fix plan created for {current_issue.key} (confidence: {fix_plan.confidence_score:.2f})")
+                    
+                    # Update Langfuse for this issue
+                    self._log_issue_to_langfuse(state, fix_plan)
+                else:
+                    self.logger.warning(f"⚠️ Failed to create fix plan for {current_issue.key}")
+                
+            except Exception as e:
+                self.logger.error(f"❌ Failed to process issue {current_issue.key}: {e}")
+                continue
         
+        self.logger.info(f"✅ Batch processing completed: {state['processed_issues']} fix plans created")
         return state
     
-    @observe(name="bug_hunter_update_langfuse")
-    def _update_langfuse_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Update Langfuse with issue analysis and fix plan."""
-        if not state["fix_plans"]:
-            state["current_issue_index"] += 1
-            return state
-        
-        latest_fix_plan = state["fix_plans"][-1]
-        self.logger.info(f"📊 Updating Langfuse with fix plan for {latest_fix_plan.issue_key}")
-        
+    def _log_issue_to_langfuse(self, state: BugHunterWorkflowState, fix_plan: FixPlan):
+        """Log individual issue analysis to Langfuse."""
         try:
             # Create detailed Langfuse event for this issue
             self._log_to_langfuse("issue_analyzed", state, {
-                "issue_key": latest_fix_plan.issue_key,
-                "file_path": latest_fix_plan.file_path,
-                "line_number": latest_fix_plan.line_number,
-                "issue_description": latest_fix_plan.issue_description,
-                "confidence_score": latest_fix_plan.confidence_score,
-                "estimated_effort": latest_fix_plan.estimated_effort,
-                "problem_analysis": latest_fix_plan.problem_analysis[:200] + "..." if len(latest_fix_plan.problem_analysis) > 200 else latest_fix_plan.problem_analysis,
-                "proposed_solution": latest_fix_plan.proposed_solution[:200] + "..." if len(latest_fix_plan.proposed_solution) > 200 else latest_fix_plan.proposed_solution
+                "issue_key": fix_plan.issue_key,
+                "file_path": fix_plan.file_path,
+                "line_number": fix_plan.line_number,
+                "issue_description": fix_plan.issue_description,
+                "confidence_score": fix_plan.confidence_score,
+                "estimated_effort": fix_plan.estimated_effort,
+                "problem_analysis": fix_plan.problem_analysis[:200] + "..." if len(fix_plan.problem_analysis) > 200 else fix_plan.problem_analysis,
+                "proposed_solution": fix_plan.proposed_solution[:200] + "..." if len(fix_plan.proposed_solution) > 200 else fix_plan.proposed_solution
             })
             
             # Create quality scores
             try:
                 self.agent.create_langfuse_score(
                     name="fix_plan_confidence",
-                    value=latest_fix_plan.confidence_score,
-                    comment=f"Confidence score for issue {latest_fix_plan.issue_key}"
+                    value=fix_plan.confidence_score,
+                    comment=f"Confidence score for issue {fix_plan.issue_key}"
                 )
                 
                 # Create effort score (convert to numeric)
                 effort_scores = {"LOW": 0.3, "MEDIUM": 0.6, "HIGH": 0.9}
-                effort_score = effort_scores.get(latest_fix_plan.estimated_effort, 0.5)
+                effort_score = effort_scores.get(fix_plan.estimated_effort, 0.5)
                 
                 self.agent.create_langfuse_score(
                     name="fix_effort_estimate",
                     value=effort_score,
-                    comment=f"Effort estimate for issue {latest_fix_plan.issue_key}: {latest_fix_plan.estimated_effort}"
+                    comment=f"Effort estimate for issue {fix_plan.issue_key}: {fix_plan.estimated_effort}"
                 )
             except Exception as score_error:
                 self.logger.warning(f"Failed to create Langfuse scores: {score_error}")
             
-            self.logger.info(f"✅ Langfuse updated for issue {latest_fix_plan.issue_key}")
-            
         except Exception as e:
-            self.logger.error(f"❌ Failed to update Langfuse: {e}")
-        
-        # Move to next issue
-        state["current_issue_index"] += 1
-        return state
+            self.logger.error(f"❌ Failed to update Langfuse for {fix_plan.issue_key}: {e}")
     
     @observe(name="bug_hunter_finalize")
     def _finalize_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
@@ -450,19 +392,16 @@ class BugHunterWorkflow:
         
         return state
     
-    def _should_continue_processing(self, state: BugHunterWorkflowState) -> str:
-        """Determine if we should continue processing more issues."""
+    def _check_issues_available(self, state: BugHunterWorkflowState) -> str:
+        """Check if there are issues to process."""
         if state["workflow_status"] == "error":
             return "error"
         
-        if state["current_issue_index"] >= len(state["sonar_issues"]):
+        if not state["sonar_issues"] or len(state["sonar_issues"]) == 0:
+            self.logger.info("ℹ️ No issues found to process")
             return "finalize"
         
-        # Limit processing to avoid long runs
-        if state["processed_issues"] >= self.agent.max_issues_per_run:
-            return "finalize"
-        
-        return "continue"
+        return "process"
     
     def _check_for_errors(self, state: BugHunterWorkflowState) -> str:
         """Check if there are errors in the current state."""
@@ -473,9 +412,9 @@ class BugHunterWorkflow:
     def _log_to_langfuse(self, event_name: str, state: BugHunterWorkflowState, metadata: Dict[str, Any]):
         """Helper method to safely log events to Langfuse."""
         try:
+            # Use the correct Langfuse API without session_id parameter
             self.agent.langfuse.create_event(
                 name=event_name,
-                session_id=state.get("langfuse_session_id"),
                 metadata=metadata
             )
             self.logger.debug(f"Logged to Langfuse: {event_name}")
@@ -516,8 +455,9 @@ class BugHunterWorkflow:
         )
         
         try:
-            # Run the workflow
-            final_state = self.workflow.invoke(initial_state)
+            # Run the workflow with configuration
+            config = {"recursion_limit": 50}  # Set reasonable recursion limit
+            final_state = self.workflow.invoke(initial_state, config=config)
             
             self.logger.info("✅ Bug Hunter workflow completed")
             return final_state["results"]

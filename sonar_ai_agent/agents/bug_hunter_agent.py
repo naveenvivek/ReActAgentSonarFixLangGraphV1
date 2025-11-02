@@ -200,9 +200,18 @@ class BugHunterAgent(BaseAgent):
                 }
                 score += type_scores.get(issue.type, 0)
                 
-                # Newer issues get slight priority
-                days_old = (datetime.now() - issue.creation_date).days
-                score += max(0, 30 - days_old)  # Bonus for issues less than 30 days old
+                # Newer issues get slight priority (handle timezone-aware dates)
+                try:
+                    if issue.creation_date.tzinfo is not None:
+                        # Convert to naive datetime for comparison
+                        creation_date = issue.creation_date.replace(tzinfo=None)
+                    else:
+                        creation_date = issue.creation_date
+                    days_old = (datetime.now() - creation_date).days
+                    score += max(0, 30 - days_old)  # Bonus for issues less than 30 days old
+                except (AttributeError, TypeError):
+                    # If date parsing fails, skip the age bonus
+                    pass
                 
                 return score
             
@@ -402,6 +411,16 @@ Please analyze this issue and provide your assessment in JSON format."""
             # Validate required fields
             required_fields = ['problem_analysis', 'solution_strategy', 'confidence_level']
             if all(field in analysis for field in required_fields):
+                # Ensure confidence_level is a float
+                try:
+                    if isinstance(analysis['confidence_level'], dict):
+                        # If it's a dict, try to extract a numeric value
+                        confidence = analysis['confidence_level'].get('value', 0.5)
+                    else:
+                        confidence = float(analysis['confidence_level'])
+                    analysis['confidence_level'] = max(0.0, min(1.0, confidence))  # Clamp between 0 and 1
+                except (ValueError, TypeError):
+                    analysis['confidence_level'] = 0.5  # Default confidence
                 return analysis
             else:
                 self.logger.warning("LLM analysis missing required fields")

@@ -106,8 +106,16 @@ def main():
                     print(f"   🔍 Type: {plan.issue_description}")
                     print(f"   🎯 Confidence: {plan.confidence_score:.2f}")
                     print(f"   ⚡ Effort: {plan.estimated_effort}")
-                    print(f"   💡 Analysis: {plan.problem_analysis[:100]}...")
-                    print(f"   🔧 Solution: {plan.proposed_solution[:100]}...")
+                    
+                    # Safely truncate analysis and solution
+                    analysis = str(plan.problem_analysis) if plan.problem_analysis else "No analysis available"
+                    solution = str(plan.proposed_solution) if plan.proposed_solution else "No solution available"
+                    
+                    analysis_preview = analysis[:100] + "..." if len(analysis) > 100 else analysis
+                    solution_preview = solution[:100] + "..." if len(solution) > 100 else solution
+                    
+                    print(f"   💡 Analysis: {analysis_preview}")
+                    print(f"   🔧 Solution: {solution_preview}")
                 
                 print(f"\n🎯 Next Steps:")
                 print("   - Review the fix plans above")
