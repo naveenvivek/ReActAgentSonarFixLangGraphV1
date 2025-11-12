@@ -240,27 +240,32 @@ class CodeHealerAgent(BaseAgent):
                     
                     group_fixes = []
                     
+                    # Generate fixes first (without applying to files)
+                    prepared_fixes = []
                     for fix_plan in fix_group:
                         try:
-                            # Process individual fix
-                            code_fix = self._process_single_fix(fix_plan)
-                            if code_fix and code_fix.is_valid:
-                                group_fixes.append(code_fix)
-                                applied_fixes.append(code_fix)
-                                
-                                if self.metrics:
-                                    self.metrics.fixes_validated += 1
+                            # Generate the fix but don't apply it yet
+                            code_fix = self._generate_code_fix_only(fix_plan)
+                            if code_fix and self._validate_fix_content(code_fix):
+                                prepared_fixes.append(code_fix)
                             
                         except Exception as e:
-                            error_msg = f"Failed to process fix for {fix_plan.issue_key}: {str(e)}"
+                            error_msg = f"Failed to generate fix for {fix_plan.issue_key}: {str(e)}"
                             errors.append(error_msg)
-                            self.log_error(e, f"Processing fix {fix_plan.issue_key}")
+                            self.log_error(e, f"Generating fix {fix_plan.issue_key}")
                     
-                    # Create Git branch and commit for this group
-                    if group_fixes:
+                    # Create Git branch and apply fixes in the correct order
+                    if prepared_fixes:
                         try:
-                            branch_name = self._create_git_branch_and_commit(group_fixes)
+                            branch_name, applied_group_fixes = self._create_branch_and_apply_fixes(prepared_fixes)
                             created_branches.append(branch_name)
+                            
+                            # Add successfully applied fixes to results
+                            for fix in applied_group_fixes:
+                                group_fixes.append(fix)
+                                applied_fixes.append(fix)
+                                if self.metrics:
+                                    self.metrics.fixes_validated += 1
                             
                             # Create merge request if enabled
                             if self.auto_create_mr:
@@ -313,10 +318,10 @@ class CodeHealerAgent(BaseAgent):
             self.stop_metrics_tracking()
             self.java_validator.cleanup()
     
-    def _process_single_fix(self, fix_plan: FixPlan) -> Optional[CodeFix]:
-        """Process a single fix plan and return the applied fix."""
+    def _generate_code_fix_only(self, fix_plan: FixPlan) -> Optional[CodeFix]:
+        """Generate a code fix without applying it to files."""
         try:
-            self.logger.info(f"Processing fix for issue {fix_plan.issue_key}", 
+            self.logger.info(f"Generating fix for issue {fix_plan.issue_key}", 
                            file_path=fix_plan.file_path,
                            line_number=fix_plan.line_number,
                            confidence=fix_plan.confidence_score)
@@ -334,31 +339,113 @@ class CodeHealerAgent(BaseAgent):
             if not context:
                 return None
             
-            # Generate code fix
+            # Generate code fix (but don't apply to file yet)
             code_fix = self._generate_code_fix(fix_plan, context)
-            if not code_fix:
-                return None
-            
-            # Apply fix to file
-            if self._apply_fix_to_file(code_fix):
-                # Validate the fix
-                validation_result = self._validate_fix(code_fix)
-                code_fix.validation_status = validation_result.is_valid
-                code_fix.validation_errors = validation_result.all_issues
-                
-                if not validation_result.is_valid:
-                    self.logger.warning(f"Fix validation failed for {fix_plan.issue_key}", 
-                                      validation_errors=validation_result.all_issues)
-                    # Restore backup if validation fails
-                    self._restore_from_backup(fix_plan.file_path)
-                
-                return code_fix
-            
-            return None
+            return code_fix
             
         except Exception as e:
-            self.log_error(e, f"Processing single fix {fix_plan.issue_key}")
+            self.log_error(e, f"Generating fix {fix_plan.issue_key}")
             return None
+    
+    def _validate_fix_content(self, code_fix: CodeFix) -> bool:
+        """Validate fix content without applying to files."""
+        try:
+            if not code_fix or not code_fix.fixed_code:
+                return False
+            
+            # Basic validation - ensure we have actual code
+            if len(code_fix.fixed_code.strip()) < 10:
+                return False
+            
+            # Ensure it's different from original
+            if code_fix.fixed_code == code_fix.original_code:
+                self.logger.warning(f"Fix identical to original for {code_fix.fix_plan.issue_key}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.log_error(e, f"Validating fix content for {code_fix.fix_plan.issue_key}")
+            return False
+    
+    def _create_branch_and_apply_fixes(self, prepared_fixes: List[CodeFix]) -> Tuple[str, List[CodeFix]]:
+        """Create branch first, then apply fixes in the correct order."""
+        try:
+            # Generate branch name
+            if len(prepared_fixes) == 1:
+                branch_name = self._generate_branch_name(prepared_fixes[0].fix_plan)
+            else:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                branch_name = f"fix/sonar-batch-{timestamp}-resource-leaks"
+            
+            # Step 1: Create and checkout branch FIRST
+            if not self.git_client.create_branch(branch_name):
+                raise Exception(f"Failed to create branch: {branch_name}")
+            
+            self.logger.info(f"Created and switched to branch: {branch_name}")
+            
+            # Step 2: Apply fixes to files (now we're safely in the new branch)
+            applied_fixes = []
+            for code_fix in prepared_fixes:
+                try:
+                    if self._apply_fix_to_file(code_fix):
+                        # Validate the applied fix
+                        validation_result = self._validate_fix(code_fix)
+                        code_fix.validation_status = validation_result.is_valid
+                        code_fix.validation_errors = validation_result.all_issues
+                        
+                        if validation_result.is_valid:
+                            applied_fixes.append(code_fix)
+                            self.logger.info(f"Successfully applied fix for {code_fix.fix_plan.issue_key}")
+                        else:
+                            self.logger.warning(f"Fix validation failed for {code_fix.fix_plan.issue_key}")
+                            # Restore backup if validation fails
+                            self._restore_from_backup(code_fix.fix_plan.file_path)
+                    
+                except Exception as e:
+                    self.log_error(e, f"Applying fix {code_fix.fix_plan.issue_key}")
+                    # Continue with other fixes even if one fails
+            
+            if not applied_fixes:
+                # No fixes were successfully applied, clean up branch
+                subprocess.run(['git', 'checkout', self.config.target_repo_branch], 
+                             cwd=self.config.target_repo_path, capture_output=True)
+                raise Exception("No fixes were successfully applied")
+            
+            # Step 3: Commit changes
+            modified_files = [fix.fix_plan.file_path for fix in applied_fixes]
+            
+            if len(applied_fixes) == 1:
+                commit_message = applied_fixes[0].commit_message
+            else:
+                commit_message = f"fix(sonar): resolve {len(applied_fixes)} resource leak issues\n\n" + \
+                               "\n".join([f"- {fix.fix_plan.issue_key}: {os.path.basename(fix.fix_plan.file_path)}" 
+                                        for fix in applied_fixes])
+            
+            if not self.git_client.commit_changes(modified_files, commit_message):
+                raise Exception(f"Failed to commit changes to branch: {branch_name}")
+            
+            # Step 4: Push branch to remote
+            if not self.git_client.push_branch(branch_name):
+                self.logger.warning(f"Failed to push branch to remote: {branch_name}")
+            else:
+                self.logger.info(f"Successfully pushed branch to remote: {branch_name}")
+            
+            self.logger.info(f"Successfully created branch with fixes", 
+                           branch_name=branch_name,
+                           fixes_applied=len(applied_fixes))
+            
+            return branch_name, applied_fixes
+            
+        except Exception as e:
+            self.log_error(e, f"Creating branch and applying fixes")
+            # Try to switch back to main branch if something went wrong
+            try:
+                subprocess.run(['git', 'checkout', self.config.target_repo_branch], 
+                             cwd=self.config.target_repo_path, capture_output=True)
+            except:
+                pass
+            raise
     
     def _read_and_analyze_code(self, fix_plan: FixPlan) -> Optional[CodeContext]:
         """Read target file and analyze code context."""
@@ -644,46 +731,7 @@ Please provide the complete fixed file content that resolves the resource leak w
 
 Resolves SonarQube issue: {fix_plan.issue_key}"""
     
-    def _create_git_branch_and_commit(self, fixes: List[CodeFix]) -> str:
-        """Create Git branch and commit changes."""
-        try:
-            # Use the first fix's branch name, or create a batch name
-            if len(fixes) == 1:
-                branch_name = fixes[0].branch_name
-                commit_message = fixes[0].commit_message
-            else:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                branch_name = f"fix/sonar-batch-{timestamp}-resource-leaks"
-                commit_message = f"fix(sonar): resolve {len(fixes)} resource leak issues\n\n" + \
-                               "\n".join([f"- {fix.fix_plan.issue_key}: {os.path.basename(fix.fix_plan.file_path)}" 
-                                        for fix in fixes])
-            
-            # Create and checkout branch
-            if not self.git_client.create_branch(branch_name):
-                raise Exception(f"Failed to create branch: {branch_name}")
-            
-            # Commit all modified files (use relative paths for git)
-            modified_files = [fix.fix_plan.file_path for fix in fixes]
-            if not self.git_client.commit_changes(modified_files, commit_message):
-                raise Exception(f"Failed to commit changes to branch: {branch_name}")
-            
-            # Push branch to remote repository
-            if not self.git_client.push_branch(branch_name):
-                self.logger.warning(f"Failed to push branch to remote: {branch_name}")
-                # Don't fail the entire operation if push fails - branch still exists locally
-            else:
-                self.logger.info(f"Successfully pushed branch to remote: {branch_name}")
-            
-            self.logger.info(f"Created Git branch and committed changes", 
-                           branch_name=branch_name,
-                           files_committed=len(fixes),
-                           pushed_to_remote=True)
-            
-            return branch_name
-            
-        except Exception as e:
-            self.log_error(e, "Creating Git branch and commit")
-            raise
+
     
     def _create_merge_request(self, fixes: List[CodeFix], branch_name: str) -> Optional[str]:
         """Create merge request for the fixes."""
