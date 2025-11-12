@@ -115,27 +115,38 @@ class BaseAgent(ABC):
         """Abstract method that each agent must implement."""
         pass
     
-    def log_error(self, error: Exception, context: str = "") -> None:
-        """Log an error with context and update metrics."""
-        self.logger.log_error_with_context(error, context or "general_error")
+    def log_error(self, error: Exception, context: str = "", **metadata) -> str:
+        """Log an error with enhanced context and update metrics."""
+        # Add agent-specific metadata
+        agent_metadata = {
+            "agent_name": self.agent_name,
+            "session_id": self.session_id,
+            **metadata
+        }
+        
+        error_id = self.logger.log_error_with_context(error, context or "general_error", **agent_metadata)
         
         if self.metrics:
             self.metrics.errors_encountered += 1
+        
+        return error_id
     
     def generate_response(self, prompt: str, system_prompt: str = "", temperature: float = 0.7, max_tokens: int = 2048) -> str:
-        """Generate response using Ollama with logging."""
-        try:
-            # Combine system and user prompts
-            full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        """Generate response using Ollama with enhanced performance tracking."""
+        # Combine system and user prompts
+        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+        
+        # Use performance context manager for automatic timing
+        with self.logger.performance_context("ollama_generation",
+                                           model=self.config.ollama_model,
+                                           prompt_length=len(full_prompt),
+                                           system_prompt_length=len(system_prompt) if system_prompt else 0,
+                                           temperature=temperature,
+                                           max_tokens=max_tokens) as ctx:
             
-            # Log the request
-            self.logger.info("Ollama LLM Request", 
-                           model=self.config.ollama_model,
-                           prompt_length=len(full_prompt),
-                           system_prompt_length=len(system_prompt) if system_prompt else 0,
-                           temperature=temperature,
-                           max_tokens=max_tokens,
-                           prompt_preview=full_prompt[:200] + "..." if len(full_prompt) > 200 else full_prompt)
+            # Log the request details
+            self.logger.debug("Ollama LLM Request initiated",
+                            prompt_preview=full_prompt[:200] + "..." if len(full_prompt) > 200 else full_prompt)
             
             response = self.ollama_client.generate(
                 model=self.config.ollama_model,
@@ -149,32 +160,31 @@ class BaseAgent(ABC):
             )
             
             if not response or not response.get('response'):
+                ctx['errors_encountered'] += 1
                 raise ValueError("Empty response from Ollama")
             
             response_text = response['response'].strip()
             
-            # Log the response
-            self.logger.info("Ollama LLM Response", 
-                           model=self.config.ollama_model,
-                           response_length=len(response_text),
-                           response_preview=response_text[:300] + "..." if len(response_text) > 300 else response_text,
-                           full_response=response_text)
+            # Update context with response metrics
+            ctx['tokens_generated'] = len(response_text.split())
+            ctx['response_length'] = len(response_text)
+            ctx['items_processed'] = 1  # One successful generation
+            
+            # Log response summary
+            self.logger.debug("Ollama LLM Response generated",
+                            response_length=len(response_text),
+                            tokens_generated=ctx['tokens_generated'],
+                            response_preview=response_text[:300] + "..." if len(response_text) > 300 else response_text)
             
             return response_text
-            
-        except Exception as e:
-            self.log_error(e, f"Failed to generate response with model {self.config.ollama_model}")
-            raise
     
     def chat_completion(self, messages: list, temperature: float = 0.7, max_tokens: int = 2048) -> str:
-        """Chat completion using Ollama with message history."""
-        try:
-            # Log the request
-            self.logger.debug("Starting Ollama chat completion", 
-                            model=self.config.ollama_model,
-                            message_count=len(messages),
-                            temperature=temperature,
-                            max_tokens=max_tokens)
+        """Chat completion using Ollama with enhanced performance tracking."""
+        with self.logger.performance_context("ollama_chat_completion",
+                                           model=self.config.ollama_model,
+                                           message_count=len(messages),
+                                           temperature=temperature,
+                                           max_tokens=max_tokens) as ctx:
             
             response = self.ollama_client.chat(
                 model=self.config.ollama_model,
@@ -188,20 +198,21 @@ class BaseAgent(ABC):
             )
             
             if not response or not response.get('message', {}).get('content'):
+                ctx['errors_encountered'] += 1
                 raise ValueError("Empty response from Ollama chat")
             
             response_text = response['message']['content'].strip()
             
-            # Log the response
+            # Update context with metrics
+            ctx['tokens_generated'] = len(response_text.split())
+            ctx['response_length'] = len(response_text)
+            ctx['items_processed'] = 1
+            
             self.logger.debug("Ollama chat completion generated", 
                             response_length=len(response_text),
-                            model=self.config.ollama_model)
+                            tokens_generated=ctx['tokens_generated'])
             
             return response_text
-            
-        except Exception as e:
-            self.log_error(e, f"Failed to complete chat with model {self.config.ollama_model}")
-            raise
     
     def log_quality_score(self, name: str, value: float, comment: str = "") -> None:
         """Log quality metrics to file."""
@@ -212,6 +223,35 @@ class BaseAgent(ABC):
             "agent_name": self.agent_name,
             "session_id": self.session_id
         })
+    
+    def log_operation_start(self, operation: str, **metadata) -> str:
+        """Start logging an operation with agent context."""
+        agent_metadata = {
+            "agent_name": self.agent_name,
+            "session_id": self.session_id,
+            **metadata
+        }
+        return self.logger.log_operation_start(operation, **agent_metadata)
+    
+    def log_operation_end(self, correlation_id: str, **metadata) -> None:
+        """End logging an operation."""
+        self.logger.log_operation_end(correlation_id, **metadata)
+    
+    def performance_context(self, operation: str, **metadata):
+        """Create a performance context manager with agent metadata."""
+        agent_metadata = {
+            "agent_name": self.agent_name,
+            "session_id": self.session_id,
+            **metadata
+        }
+        return self.logger.performance_context(operation, **agent_metadata)
+    
+    def log_agent_step(self, step_name: str, status: str, **metadata) -> None:
+        """Log an agent processing step."""
+        self.logger.log_workflow_step(f"{self.agent_name}_{step_name}", status,
+                                    agent_name=self.agent_name,
+                                    session_id=self.session_id,
+                                    **metadata)
     
     def __repr__(self) -> str:
         """String representation of the agent."""
