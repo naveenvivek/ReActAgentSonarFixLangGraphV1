@@ -50,6 +50,7 @@ current_workflow.png
 
 # Logs
 *.log
+logs/
 
 # Temporary files
 *.tmp

@@ -6,7 +6,7 @@ Connects to SonarQube, fetches issues, analyzes problems, and creates fix plans.
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import json
-from langfuse import observe
+
 
 from .base_agent import BaseAgent
 from ..models import SonarIssue, FixPlan
@@ -36,7 +36,7 @@ class BugHunterAgent(BaseAgent):
         
         self.logger.info("Bug Hunter Agent initialized")
     
-    @observe(name="bug_hunter_process")
+
     def process(self, project_key: Optional[str] = None, 
                 severities: Optional[List[str]] = None,
                 issue_types: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -92,7 +92,7 @@ class BugHunterAgent(BaseAgent):
         finally:
             metrics = self.stop_metrics_tracking()
             if metrics:
-                self.create_langfuse_score(
+                self.log_quality_score(
                     "bug_hunter_processing_time",
                     metrics.processing_time_seconds,
                     f"Processing time for {len(fix_plans) if 'fix_plans' in locals() else 0} issues"
@@ -225,7 +225,7 @@ class BugHunterAgent(BaseAgent):
             self.log_error(e, "Issue prioritization failed")
             return issues  # Return original list if prioritization fails
     
-    @observe(name="analyze_issue_and_create_plan")
+
     def _analyze_issue_and_create_plan(self, issue: SonarIssue) -> Optional[FixPlan]:
         """
         Analyze a single issue and create a fix plan using Ollama LLM.
@@ -255,8 +255,14 @@ class BugHunterAgent(BaseAgent):
             fix_plan = self._create_fix_plan(issue, code_context, analysis)
             
             if fix_plan:
-                self.logger.info(f"Created fix plan for issue {issue.key}")
-                self.create_langfuse_score(
+                self.logger.log_fix_plan_created(
+                    issue.key, 
+                    fix_plan.confidence_score, 
+                    fix_plan.estimated_effort,
+                    file_path=fix_plan.file_path,
+                    line_number=fix_plan.line_number
+                )
+                self.log_quality_score(
                     "fix_plan_confidence",
                     fix_plan.confidence_score,
                     f"Confidence score for issue {issue.key}"
@@ -310,13 +316,23 @@ class BugHunterAgent(BaseAgent):
             self.log_error(e, f"Failed to get code context for issue {issue.key}")
             return None
     
-    @observe(name="analyze_issue_with_llm")
+
     def _analyze_issue_with_llm(self, issue: SonarIssue, code_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Use Ollama LLM to analyze the issue and understand the problem."""
         try:
             # Create analysis prompt
             system_prompt = self._create_analysis_system_prompt()
             user_prompt = self._create_analysis_user_prompt(issue, code_context)
+            
+            # Log the analysis request
+            self.logger.info("Starting LLM Issue Analysis", 
+                           issue_key=issue.key,
+                           issue_type=issue.type,
+                           issue_severity=issue.severity,
+                           file_path=code_context.get('file_path', 'Unknown'),
+                           line_number=issue.line,
+                           system_prompt_length=len(system_prompt),
+                           user_prompt_length=len(user_prompt))
             
             # Generate analysis using Ollama
             response = self.generate_response(
@@ -330,7 +346,12 @@ class BugHunterAgent(BaseAgent):
             analysis = self._parse_llm_analysis(response)
             
             if analysis:
-                self.logger.debug(f"LLM analysis completed for issue {issue.key}")
+                self.logger.info("LLM Issue Analysis Completed", 
+                               issue_key=issue.key,
+                               confidence_level=analysis.get('confidence_level', 0),
+                               problem_analysis=analysis.get('problem_analysis', '')[:200] + "..." if len(analysis.get('problem_analysis', '')) > 200 else analysis.get('problem_analysis', ''),
+                               solution_strategy=analysis.get('solution_strategy', '')[:200] + "..." if len(analysis.get('solution_strategy', '')) > 200 else analysis.get('solution_strategy', ''),
+                               full_analysis=analysis)
                 return analysis
             else:
                 self.logger.warning(f"Could not parse LLM analysis for issue {issue.key}")
@@ -443,6 +464,18 @@ Please analyze this issue and provide your assessment in JSON format."""
             else:
                 file_path = issue.component
             
+            # Estimate effort
+            estimated_effort = self._estimate_effort(issue, analysis)
+            
+            # Log fix plan creation
+            self.logger.info("Creating Fix Plan", 
+                           issue_key=issue.key,
+                           file_path=file_path,
+                           line_number=issue.line,
+                           confidence_score=float(analysis.get('confidence_level', 0.5)),
+                           estimated_effort=estimated_effort,
+                           analysis_keys=list(analysis.keys()))
+            
             # Create fix plan
             fix_plan = FixPlan(
                 issue_key=issue.key,
@@ -454,8 +487,17 @@ Please analyze this issue and provide your assessment in JSON format."""
                 code_context=code_context.get('context_content', ''),
                 potential_side_effects=analysis.get('side_effects', []) if isinstance(analysis.get('side_effects'), list) else [str(analysis.get('side_effects', ''))],
                 confidence_score=float(analysis.get('confidence_level', 0.5)),
-                estimated_effort=self._estimate_effort(issue, analysis)
+                estimated_effort=estimated_effort
             )
+            
+            # Log completed fix plan
+            self.logger.info("Fix Plan Created Successfully", 
+                           issue_key=issue.key,
+                           fix_plan_confidence=fix_plan.confidence_score,
+                           fix_plan_effort=fix_plan.estimated_effort,
+                           problem_analysis_length=len(fix_plan.problem_analysis),
+                           solution_length=len(fix_plan.proposed_solution),
+                           side_effects_count=len(fix_plan.potential_side_effects))
             
             return fix_plan
             

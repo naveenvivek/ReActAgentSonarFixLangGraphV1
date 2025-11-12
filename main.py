@@ -56,24 +56,24 @@ def main():
     # Setup logging
     setup_logging(args.verbose)
     
-    print("🤖 SonarQube AI Agent - LangGraph Bug Hunter")
+    print("[AI] SonarQube AI Agent - LangGraph Bug Hunter")
     print("=" * 60)
     
     try:
         # Load configuration
         config = Config()
-        print(f"✅ Configuration loaded")
+        print(f"[SUCCESS] Configuration loaded")
         print(f"   - SonarQube: {config.sonar_url}")
         print(f"   - Project: {args.project_key or config.sonar_project_key}")
         print(f"   - Repository: {config.target_repo_url}")
         print(f"   - Model: {config.ollama_model}")
-        print(f"   - Langfuse: {config.langfuse_url}")
+        print(f"   - Log File: {config.log_file}")
         
         # Initialize workflow
         workflow = BugHunterWorkflow(config)
-        print(f"✅ LangGraph workflow initialized")
+        print(f"[SUCCESS] LangGraph workflow initialized")
         
-        print(f"\n🔄 Running Bug Hunter Analysis...")
+        print(f"\n[PROCESS] Running Bug Hunter Analysis...")
         print(f"   - Severities: {', '.join(args.severities)}")
         print(f"   - Types: {', '.join(args.types)}")
         print("-" * 40)
@@ -86,62 +86,70 @@ def main():
         )
         
         # Display results
-        print(f"\n📊 Analysis Results:")
+        print(f"\n[DATA] Analysis Results:")
         print("-" * 40)
         
         if result['status'] == 'success':
-            print(f"✅ Status: {result['status']}")
-            print(f"📝 Message: {result['message']}")
-            print(f"📋 Fix Plans Created: {result['total_plans']}")
-            print(f"⏱️ Processing Time: {result.get('processing_time', 0):.2f}s")
+            print(f"[SUCCESS] Status: {result['status']}")
+            print(f"[LIST] Message: {result['message']}")
+            print(f"[LIST] Fix Plans Created: {result['total_plans']}")
+            print(f"[TIME] Processing Time: {result.get('processing_time', 0):.2f}s")
             
             # Show fix plans
             fix_plans = result.get('fix_plans', [])
             if fix_plans:
-                print(f"\n📋 Fix Plans Summary:")
+                print(f"\n[LIST] Fix Plans Summary:")
                 print("-" * 40)
                 for i, plan in enumerate(fix_plans, 1):
                     print(f"\n{i}. Issue: {plan.issue_key}")
-                    print(f"   📁 File: {plan.file_path}:{plan.line_number}")
-                    print(f"   🔍 Type: {plan.issue_description}")
-                    print(f"   🎯 Confidence: {plan.confidence_score:.2f}")
-                    print(f"   ⚡ Effort: {plan.estimated_effort}")
+                    print(f"   [FOLDER] File: {plan.file_path}:{plan.line_number}")
+                    print(f"   [SEARCH] Type: {plan.issue_description}")
+                    print(f"   [TARGET] Confidence: {plan.confidence_score:.2f}")
+                    print(f"   [EFFORT] Effort: {plan.estimated_effort}")
                     
                     # Safely truncate analysis and solution
                     analysis = str(plan.problem_analysis) if plan.problem_analysis else "No analysis available"
                     solution = str(plan.proposed_solution) if plan.proposed_solution else "No solution available"
                     
-                    analysis_preview = analysis[:100] + "..." if len(analysis) > 100 else analysis
-                    solution_preview = solution[:100] + "..." if len(solution) > 100 else solution
+                    analysis_preview = analysis[:150] + "..." if len(analysis) > 150 else analysis
+                    solution_preview = solution[:150] + "..." if len(solution) > 150 else solution
                     
-                    print(f"   💡 Analysis: {analysis_preview}")
-                    print(f"   🔧 Solution: {solution_preview}")
+                    print(f"   [IDEA] Analysis: {analysis_preview}")
+                    print(f"   [FIX] Solution: {solution_preview}")
+                    
+                    # Show side effects if any
+                    if plan.potential_side_effects and any(plan.potential_side_effects):
+                        side_effects = [str(effect) for effect in plan.potential_side_effects if effect]
+                        if side_effects:
+                            print(f"   [WARNING] Side Effects: {', '.join(side_effects[:2])}")
+                    
+                    print(f"   [DATA] Full details logged to: {config.log_file}")
                 
-                print(f"\n🎯 Next Steps:")
+                print(f"\n[TARGET] Next Steps:")
                 print("   - Review the fix plans above")
-                print("   - Check Langfuse dashboard for detailed analytics")
+                print(f"   - Check log file for detailed analytics: {config.log_file}")
                 print("   - Implement the Code Healer Agent for automated fixes")
             else:
-                print(f"\nℹ️ No issues found or processed")
+                print(f"\n[INFO] No issues found or processed")
                 print("   - Check if SonarQube has issues for this project")
                 print("   - Verify the severity and type filters")
         else:
-            print(f"❌ Status: {result['status']}")
-            print(f"💥 Error: {result['message']}")
+            print(f"[ERROR] Status: {result['status']}")
+            print(f"[ERROR] Error: {result['message']}")
             return 1
             
     except KeyboardInterrupt:
-        print(f"\n⏹️ Analysis interrupted by user")
+        print(f"\n[STOP] Analysis interrupted by user")
         return 1
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\n[ERROR] Unexpected error: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()
         return 1
     
-    print(f"\n🎉 Bug Hunter analysis completed!")
-    print("   Check Langfuse dashboard for detailed metrics and traces")
+    print(f"\n[SUCCESS] Bug Hunter analysis completed!")
+    print(f"   Check log file for detailed metrics and traces: {config.log_file}")
     return 0
 
 if __name__ == "__main__":

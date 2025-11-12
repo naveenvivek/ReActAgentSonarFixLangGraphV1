@@ -7,12 +7,12 @@ from typing import Dict, List, Any, Optional, TypedDict
 from datetime import datetime
 import json
 from langgraph.graph import StateGraph, END
-from langfuse import observe
 import logging
 
 from ..agents.bug_hunter_agent import BugHunterAgent
 from ..models import SonarIssue, FixPlan
 from ..config import Config
+from ..utils.logger import get_logger
 
 
 class BugHunterWorkflowState(TypedDict):
@@ -33,32 +33,23 @@ class BugHunterWorkflowState(TypedDict):
     processed_issues: int
     total_issues: int
     
-    # Langfuse tracking
-    langfuse_trace_id: Optional[str]
-    langfuse_session_id: Optional[str]
+    # Session tracking
+    session_id: Optional[str]
     
     # Results
     results: Dict[str, Any]
 
 
 class BugHunterWorkflow:
-    """LangGraph workflow for Bug Hunter Agent with Langfuse integration."""
+    """LangGraph workflow for Bug Hunter Agent with file-based logging."""
     
     def __init__(self, config: Config):
         """Initialize Bug Hunter workflow."""
         self.config = config
         self.agent = BugHunterAgent(config)
         
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
-        
-        # Add console handler if not exists
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setLevel(logging.INFO)
-            formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
+        # Initialize file-based logger
+        self.logger = get_logger(config, "sonar_ai_agent.workflow")
         
         # Build the workflow graph
         self.workflow = self._build_workflow()
@@ -111,7 +102,7 @@ class BugHunterWorkflow:
         # Compile with recursion limit
         return workflow.compile(checkpointer=None, debug=False)
     
-    @observe(name="bug_hunter_initialize")
+
     def _initialize_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
         """Initialize the workflow and start Langfuse tracking."""
         self.logger.info("🚀 Initializing Bug Hunter workflow")
@@ -119,7 +110,7 @@ class BugHunterWorkflow:
         # Start metrics tracking
         self.agent.start_metrics_tracking()
         
-        # Initialize Langfuse session
+        # Initialize session
         session_id = f"bug_hunter_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         # Update state
@@ -131,22 +122,14 @@ class BugHunterWorkflow:
             "current_issue_index": 0,
             "sonar_issues": [],
             "fix_plans": [],
-            "langfuse_session_id": session_id,
+            "session_id": session_id,
             "results": {}
         })
-        
-        # Initialize Langfuse tracking
-        try:
-            trace_id = f"trace_{session_id}"
-            state["langfuse_trace_id"] = trace_id
-            self.logger.info(f"Langfuse tracking initialized: {trace_id}")
-        except Exception as e:
-            self.logger.warning(f"Failed to initialize Langfuse tracking: {e}")
         
         self.logger.info(f"✅ Workflow initialized with session: {session_id}")
         return state
     
-    @observe(name="bug_hunter_prepare_repository")
+
     def _prepare_repository_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
         """Prepare the target repository."""
         self.logger.info("📁 Preparing target repository")
@@ -159,10 +142,10 @@ class BugHunterWorkflow:
             else:
                 self.logger.info("✅ Repository prepared successfully")
                 
-                # Log to Langfuse
-                self._log_to_langfuse("repository_prepared", state, {
-                    "repository_url": self.config.target_repo_url
-                })
+                # Log workflow step
+                self.logger.info("Repository preparation completed", 
+                               repository_url=self.config.target_repo_url,
+                               session_id=state.get("session_id"))
                 
         except Exception as e:
             state["error_message"] = f"Repository preparation failed: {str(e)}"
@@ -171,7 +154,7 @@ class BugHunterWorkflow:
         
         return state
     
-    @observe(name="bug_hunter_connect_sonarqube")
+
     def _connect_sonarqube_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
         """Connect to SonarQube and validate project."""
         self.logger.info("🔗 Connecting to SonarQube")
@@ -184,11 +167,11 @@ class BugHunterWorkflow:
             else:
                 self.logger.info("✅ SonarQube connection validated")
                 
-                # Log to Langfuse
-                self._log_to_langfuse("sonarqube_connected", state, {
-                    "sonar_url": self.config.sonar_url,
-                    "project_key": self.config.sonar_project_key
-                })
+                # Log workflow step
+                self.logger.info("SonarQube connection established", 
+                               sonar_url=self.config.sonar_url,
+                               project_key=self.config.sonar_project_key,
+                               session_id=state.get("session_id"))
                 
         except Exception as e:
             state["error_message"] = f"SonarQube connection failed: {str(e)}"
@@ -197,7 +180,7 @@ class BugHunterWorkflow:
         
         return state
     
-    @observe(name="bug_hunter_fetch_issues")
+
     def _fetch_issues_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
         """Fetch issues from SonarQube."""
         self.logger.info("📊 Fetching issues from SonarQube")
@@ -223,12 +206,12 @@ class BugHunterWorkflow:
                 
                 self.logger.info(f"✅ Fetched and prioritized {len(prioritized_issues)} issues")
                 
-                # Log to Langfuse
-                self._log_to_langfuse("issues_fetched", state, {
-                    "total_issues": len(prioritized_issues),
-                    "severities": [issue.severity for issue in prioritized_issues[:5]],  # First 5
-                    "types": [issue.type for issue in prioritized_issues[:5]]
-                })
+                # Log workflow step
+                self.logger.info("Issues fetched and prioritized", 
+                               total_issues=len(prioritized_issues),
+                               severities=[issue.severity for issue in prioritized_issues[:5]],
+                               types=[issue.type for issue in prioritized_issues[:5]],
+                               session_id=state.get("session_id"))
                 
         except Exception as e:
             state["error_message"] = f"Failed to fetch issues: {str(e)}"
@@ -237,7 +220,7 @@ class BugHunterWorkflow:
         
         return state
     
-    @observe(name="bug_hunter_process_issues")
+
     def _process_issues_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
         """Process all issues in batch to avoid recursion."""
         issues = state["sonar_issues"]
@@ -270,8 +253,13 @@ class BugHunterWorkflow:
                     
                     self.logger.info(f"✅ Fix plan created for {current_issue.key} (confidence: {fix_plan.confidence_score:.2f})")
                     
-                    # Update Langfuse for this issue
-                    self._log_issue_to_langfuse(state, fix_plan)
+                    # Log issue analysis
+                    self.logger.info("Issue analysis completed", 
+                                   issue_key=fix_plan.issue_key,
+                                   confidence_score=fix_plan.confidence_score,
+                                   estimated_effort=fix_plan.estimated_effort,
+                                   file_path=fix_plan.file_path,
+                                   session_id=state.get("session_id"))
                 else:
                     self.logger.warning(f"⚠️ Failed to create fix plan for {current_issue.key}")
                 
@@ -282,45 +270,9 @@ class BugHunterWorkflow:
         self.logger.info(f"✅ Batch processing completed: {state['processed_issues']} fix plans created")
         return state
     
-    def _log_issue_to_langfuse(self, state: BugHunterWorkflowState, fix_plan: FixPlan):
-        """Log individual issue analysis to Langfuse."""
-        try:
-            # Create detailed Langfuse event for this issue
-            self._log_to_langfuse("issue_analyzed", state, {
-                "issue_key": fix_plan.issue_key,
-                "file_path": fix_plan.file_path,
-                "line_number": fix_plan.line_number,
-                "issue_description": fix_plan.issue_description,
-                "confidence_score": fix_plan.confidence_score,
-                "estimated_effort": fix_plan.estimated_effort,
-                "problem_analysis": fix_plan.problem_analysis[:200] + "..." if len(fix_plan.problem_analysis) > 200 else fix_plan.problem_analysis,
-                "proposed_solution": fix_plan.proposed_solution[:200] + "..." if len(fix_plan.proposed_solution) > 200 else fix_plan.proposed_solution
-            })
-            
-            # Create quality scores
-            try:
-                self.agent.create_langfuse_score(
-                    name="fix_plan_confidence",
-                    value=fix_plan.confidence_score,
-                    comment=f"Confidence score for issue {fix_plan.issue_key}"
-                )
-                
-                # Create effort score (convert to numeric)
-                effort_scores = {"LOW": 0.3, "MEDIUM": 0.6, "HIGH": 0.9}
-                effort_score = effort_scores.get(fix_plan.estimated_effort, 0.5)
-                
-                self.agent.create_langfuse_score(
-                    name="fix_effort_estimate",
-                    value=effort_score,
-                    comment=f"Effort estimate for issue {fix_plan.issue_key}: {fix_plan.estimated_effort}"
-                )
-            except Exception as score_error:
-                self.logger.warning(f"Failed to create Langfuse scores: {score_error}")
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to update Langfuse for {fix_plan.issue_key}: {e}")
+
     
-    @observe(name="bug_hunter_finalize")
+
     def _finalize_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
         """Finalize the workflow and create summary."""
         self.logger.info("🏁 Finalizing Bug Hunter workflow")
@@ -342,25 +294,23 @@ class BugHunterWorkflow:
         state["results"] = results
         state["workflow_status"] = "completed"
         
-        # Final Langfuse summary
-        self._log_to_langfuse("workflow_completed", state, {
-            "total_issues": state["total_issues"],
-            "processed_issues": state["processed_issues"],
-            "fix_plans_created": len(state["fix_plans"]),
-            "processing_time_seconds": metrics.processing_time_seconds if metrics else 0,
-            "success_rate": state["processed_issues"] / state["total_issues"] if state["total_issues"] > 0 else 0
-        })
+        # Final workflow summary
+        success_rate = state["processed_issues"] / state["total_issues"] if state["total_issues"] > 0 else 1.0
         
-        # Overall workflow score
-        try:
-            success_rate = state["processed_issues"] / state["total_issues"] if state["total_issues"] > 0 else 1.0
-            self.agent.create_langfuse_score(
-                name="workflow_success_rate",
-                value=success_rate,
-                comment=f"Successfully processed {state['processed_issues']}/{state['total_issues']} issues"
-            )
-        except Exception as e:
-            self.logger.warning(f"Failed to create workflow success score: {e}")
+        self.logger.info("Workflow completed successfully", 
+                       total_issues=state["total_issues"],
+                       processed_issues=state["processed_issues"],
+                       fix_plans_created=len(state["fix_plans"]),
+                       processing_time_seconds=metrics.processing_time_seconds if metrics else 0,
+                       success_rate=success_rate,
+                       session_id=state.get("session_id"))
+        
+        # Log quality metrics
+        self.agent.log_quality_score(
+            "workflow_success_rate",
+            success_rate,
+            f"Successfully processed {state['processed_issues']}/{state['total_issues']} issues"
+        )
         
         self.logger.info(f"✅ Workflow completed: {len(state['fix_plans'])} fix plans created")
         return state
@@ -383,12 +333,12 @@ class BugHunterWorkflow:
             "timestamp": datetime.now().isoformat()
         }
         
-        # Log error to Langfuse
-        self._log_to_langfuse("workflow_error", state, {
-            "error_message": error_msg,
-            "processed_issues": state.get("processed_issues", 0),
-            "total_issues": state.get("total_issues", 0)
-        })
+        # Log error details
+        self.logger.error("Workflow error occurred", 
+                        error_message=error_msg,
+                        processed_issues=state.get("processed_issues", 0),
+                        total_issues=state.get("total_issues", 0),
+                        session_id=state.get("session_id"))
         
         return state
     
@@ -409,17 +359,7 @@ class BugHunterWorkflow:
             return "error"
         return "continue"
     
-    def _log_to_langfuse(self, event_name: str, state: BugHunterWorkflowState, metadata: Dict[str, Any]):
-        """Helper method to safely log events to Langfuse."""
-        try:
-            # Use the correct Langfuse API without session_id parameter
-            self.agent.langfuse.create_event(
-                name=event_name,
-                metadata=metadata
-            )
-            self.logger.debug(f"Logged to Langfuse: {event_name}")
-        except Exception as e:
-            self.logger.warning(f"Failed to log {event_name} to Langfuse: {e}")
+
     
     def run(self, project_key: Optional[str] = None,
             severities: Optional[List[str]] = None,

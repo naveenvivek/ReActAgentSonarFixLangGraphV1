@@ -11,6 +11,7 @@ import time
 
 from ..config import Config
 from ..models import SonarIssue
+from ..utils.logger import get_logger
 
 
 class SonarQubeClient:
@@ -23,16 +24,8 @@ class SonarQubeClient:
         self.token = config.sonar_token
         self.project_key = config.sonar_project_key
         
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.DEBUG)
-        
-        # Add console handler if not exists
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
+        # Initialize file-based logger
+        self.logger = get_logger(config, "sonar_ai_agent.sonarqube_client")
         
         # Setup session with authentication
         self.session = requests.Session()
@@ -45,13 +38,27 @@ class SonarQubeClient:
     def test_connection(self) -> bool:
         """Test connection to SonarQube server."""
         try:
-            response = self.session.get(f"{self.base_url}/api/system/status")
+            api_url = f"{self.base_url}/api/system/status"
+            self.logger.info("SonarQube API Call", 
+                           api_endpoint="system/status",
+                           url=api_url,
+                           method="GET")
+            
+            response = self.session.get(api_url)
+            
             if response.status_code == 200:
                 status_data = response.json()
-                self.logger.info(f"Connected to SonarQube: {status_data.get('status', 'Unknown')}")
+                self.logger.info("SonarQube API Response", 
+                               api_endpoint="system/status",
+                               status_code=response.status_code,
+                               sonar_status=status_data.get('status', 'Unknown'),
+                               version=status_data.get('version', 'Unknown'))
                 return True
             else:
-                self.logger.error(f"SonarQube connection failed: {response.status_code}")
+                self.logger.error("SonarQube API Response", 
+                                api_endpoint="system/status",
+                                status_code=response.status_code,
+                                response_text=response.text)
                 return False
         except Exception as e:
             self.logger.error(f"Failed to connect to SonarQube: {e}")
@@ -61,23 +68,40 @@ class SonarQubeClient:
         """Get project information from SonarQube."""
         project_key = project_key or self.project_key
         try:
-            response = self.session.get(
-                f"{self.base_url}/api/projects/search",
-                params={'projects': project_key}
-            )
+            api_url = f"{self.base_url}/api/projects/search"
+            params = {'projects': project_key}
+            
+            self.logger.info("SonarQube API Call", 
+                           api_endpoint="projects/search",
+                           url=api_url,
+                           params=params)
+            
+            response = self.session.get(api_url, params=params)
             
             if response.status_code == 200:
                 data = response.json()
                 projects = data.get('components', [])
+                
+                self.logger.info("SonarQube API Response", 
+                               api_endpoint="projects/search",
+                               status_code=response.status_code,
+                               projects_found=len(projects))
+                
                 if projects:
                     project = projects[0]
-                    self.logger.info(f"Found project: {project.get('name')} ({project.get('key')})")
+                    self.logger.info("SonarQube Project Found", 
+                                   project_name=project.get('name'),
+                                   project_key=project.get('key'),
+                                   project_qualifier=project.get('qualifier'))
                     return project
                 else:
                     self.logger.warning(f"Project not found: {project_key}")
                     return {}
             else:
-                self.logger.error(f"Failed to get project info: {response.status_code}")
+                self.logger.error("SonarQube API Response", 
+                                api_endpoint="projects/search",
+                                status_code=response.status_code,
+                                response_text=response.text)
                 return {}
                 
         except Exception as e:
@@ -126,16 +150,27 @@ class SonarQubeClient:
                     'p': page
                 }
                 
+                api_url = f"{self.base_url}/api/issues/search"
                 self.logger.debug(f"Fetching issues page {page} with params: {params}")
+                self.logger.info("SonarQube API Call", 
+                               api_endpoint="issues/search",
+                               url=api_url,
+                               params=params,
+                               page=page)
                 
-                response = self.session.get(
-                    f"{self.base_url}/api/issues/search",
-                    params=params
-                )
+                response = self.session.get(api_url, params=params)
                 
                 if response.status_code == 200:
                     data = response.json()
                     issues = data.get('issues', [])
+                    
+                    # Log API response details
+                    self.logger.info("SonarQube API Response", 
+                                   api_endpoint="issues/search",
+                                   status_code=response.status_code,
+                                   issues_count=len(issues),
+                                   total_issues=data.get('paging', {}).get('total', 0),
+                                   page=page)
                     
                     if not issues:
                         break  # No more issues
@@ -145,6 +180,14 @@ class SonarQubeClient:
                         sonar_issue = self._convert_to_sonar_issue(issue_data)
                         if sonar_issue:
                             all_issues.append(sonar_issue)
+                            # Log individual issue details
+                            self.logger.debug("SonarQube Issue Found", 
+                                             issue_key=sonar_issue.key,
+                                             severity=sonar_issue.severity,
+                                             type=sonar_issue.type,
+                                             component=sonar_issue.component,
+                                             line=sonar_issue.line,
+                                             issue_message=sonar_issue.message)
                     
                     # Check if there are more pages
                     paging = data.get('paging', {})

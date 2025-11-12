@@ -7,7 +7,7 @@ An intelligent code quality automation system that uses LangGraph workflows and 
 - 🔄 **LangGraph Workflow Orchestration** - 9-node workflow with conditional edges
 - 🤖 **AI-Powered Analysis** - Uses Ollama LLM for intelligent issue analysis
 - 🔍 **SonarQube Integration** - Fetches and prioritizes code quality issues
-- 📊 **Langfuse Observability** - Complete tracking and quality metrics
+- 📊 **File-based Logging** - Complete tracking and quality metrics with log rotation
 - 🎨 **Workflow Visualization** - Interactive Mermaid diagrams
 - 📁 **Git Integration** - Repository cloning and code context extraction
 - ⚡ **Production Ready** - Comprehensive error handling and recovery
@@ -21,7 +21,7 @@ graph TD
     C --> D[Fetch Issues]
     D --> E[Analyze Issue]
     E --> F[Create Fix Plan]
-    F --> G[Update Langfuse]
+    F --> G[Log Results]
     G --> H{More Issues?}
     H -->|Yes| E
     H -->|No| I[Finalize]
@@ -43,7 +43,7 @@ graph TD
 
 1. **SonarQube Server** running on `localhost:9100`
 2. **Ollama** running on `localhost:11434` with a model (e.g., `llama3.1:latest`)
-3. **Langfuse** running on `localhost:3000` (optional for observability)
+3. **Log directory** with write permissions for file-based logging
 
 ### Installation
 
@@ -79,10 +79,11 @@ TARGET_REPO_BRANCH=main
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.1:latest
 
-# Observability (Optional)
-LANGFUSE_URL=http://localhost:3000
-LANGFUSE_SECRET_KEY=your_secret_key
-LANGFUSE_PUBLIC_KEY=your_public_key
+# Logging Configuration
+LOG_LEVEL=INFO
+LOG_FILE=logs/sonar_ai_agent.log
+LOG_MAX_SIZE=10485760
+LOG_BACKUP_COUNT=5
 
 # Git Configuration
 GIT_USER_NAME=Your Name
@@ -112,7 +113,7 @@ python visualize_workflow.py
 3. **📊 Fetches** code quality issues (BLOCKER, CRITICAL, MAJOR)
 4. **🤖 Analyzes** each issue using Ollama LLM
 5. **📋 Creates** structured fix plans with confidence scores
-6. **📈 Tracks** everything in Langfuse for observability
+6. **📈 Tracks** everything in structured log files with rotation
 7. **🎨 Visualizes** the complete workflow
 
 ## 🏗️ Project Structure
@@ -120,7 +121,7 @@ python visualize_workflow.py
 ```
 sonar_ai_agent/
 ├── agents/
-│   ├── base_agent.py           # Base agent with Ollama & Langfuse
+│   ├── base_agent.py           # Base agent with Ollama & file logging
 │   └── bug_hunter_agent.py     # Main Bug Hunter Agent
 ├── integrations/
 │   ├── sonarqube_client.py     # SonarQube API client
@@ -193,9 +194,9 @@ jupyter notebook workflow_visualization.ipynb
 # (copy content from bug_hunter_workflow.mmd)
 ```
 
-## 📊 Observability
+## 📊 Logging and Observability
 
-The system provides comprehensive tracking through Langfuse:
+The system provides comprehensive tracking through structured file logging:
 
 - **Session Tracking** - Unique session IDs for each run
 - **Quality Metrics** - Fix plan confidence scores
@@ -245,7 +246,7 @@ This project is licensed under the MIT License.
 
 - **LangGraph** for workflow orchestration
 - **Ollama** for local LLM inference
-- **Langfuse** for observability
+- **File-based Logging** for observability and debugging
 - **SonarQube** for code quality analysis
 
 ## 🔗 Links
@@ -254,7 +255,7 @@ This project is licensed under the MIT License.
 - [SonarQube Documentation](https://docs.sonarqube.org/)
 - [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
 - [Ollama Documentation](https://ollama.ai/docs)
-- [Langfuse Documentation](https://langfuse.com/docs)
+
 
 ---
 

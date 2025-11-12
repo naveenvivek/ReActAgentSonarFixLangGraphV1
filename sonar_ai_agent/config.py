@@ -32,10 +32,11 @@ class Config:
         self.ollama_url: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
         self.ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
         
-        # Observability
-        self.langfuse_url: str = os.getenv("LANGFUSE_URL", "http://localhost:3000")
-        self.langfuse_secret_key: Optional[str] = os.getenv("LANGFUSE_SECRET_KEY")
-        self.langfuse_public_key: Optional[str] = os.getenv("LANGFUSE_PUBLIC_KEY")
+        # Logging Configuration
+        self.log_level: str = os.getenv("LOG_LEVEL", "INFO")
+        self.log_file: str = os.getenv("LOG_FILE", "logs/sonar_ai_agent.log")
+        self.log_max_size: int = int(os.getenv("LOG_MAX_SIZE", "10485760"))  # 10MB default
+        self.log_backup_count: int = int(os.getenv("LOG_BACKUP_COUNT", "5"))
         
         # Git Configuration
         self.git_user_name: str = os.getenv("GIT_USER_NAME", "SonarQube AI Agent")
@@ -55,8 +56,6 @@ class Config:
             ("SONAR_TOKEN", self.sonar_token),
             ("TARGET_REPO_URL", self.target_repo_url),
             ("TARGET_REPO_PATH", self.target_repo_path),
-            ("LANGFUSE_SECRET_KEY", self.langfuse_secret_key),
-            ("LANGFUSE_PUBLIC_KEY", self.langfuse_public_key),
             ("GITHUB_TOKEN", self.github_token)
         ]
         
@@ -74,6 +73,6 @@ class Config:
             f"target_repo_url='{self.target_repo_url}', "
             f"ollama_url='{self.ollama_url}', "
             f"ollama_model='{self.ollama_model}', "
-            f"langfuse_url='{self.langfuse_url}'"
+            f"log_file='{self.log_file}'"
             f")"
         )
