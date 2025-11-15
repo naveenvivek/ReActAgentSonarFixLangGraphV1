@@ -88,6 +88,9 @@ LOG_FILE=logs/sonar_ai_agent.log
 LOG_MAX_SIZE=10485760
 LOG_BACKUP_COUNT=5
 
+# Build Validation Configuration
+ENABLE_MAVEN_BUILD_VALIDATION=false  # false=skip build entirely and commit, true=run build and stop if fails
+
 # Git Configuration
 GIT_USER_NAME=Your Name
 GIT_USER_EMAIL=your.email@example.com

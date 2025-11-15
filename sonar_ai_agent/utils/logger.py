@@ -37,12 +37,17 @@ class SonarAILogger:
         self.logger.setLevel(
             getattr(logging, config.log_level.upper(), logging.INFO))
 
+        # Disable propagation to prevent duplicate logging
+        self.logger.propagate = False
+
+        # Clear any existing handlers to prevent duplicates
+        self.logger.handlers.clear()
+
         # Initialize JSON array in log file
         self._initialize_log_file()
 
-        # Avoid duplicate handlers
-        if not self.logger.handlers:
-            self._setup_handlers()
+        # Setup handlers (always since we cleared them)
+        self._setup_handlers()
 
     def _initialize_log_file(self):
         """Initialize the log file with JSON array opening bracket."""

@@ -298,12 +298,12 @@ class CodeHealerWorkflow:
 
     def _build_validation_node(self, state: CodeHealerWorkflowState) -> CodeHealerWorkflowState:
         """Run build validation to check if fixes break the build (continues on failure with warning)."""
-        # Check if build validation is disabled
-        if getattr(self.config, 'skip_build_validation', False):
+        # Check if Maven build validation is disabled
+        if not getattr(self.config, 'enable_maven_build_validation', False):
             self.logger.info(
-                "⚠️ Build validation skipped (SKIP_BUILD_VALIDATION=true)")
+                "🔓 Maven build validation disabled - skipping build and proceeding to commit")
             state["build_status"] = "skipped"
-            state["build_output"] = "Build validation disabled by configuration"
+            state["build_output"] = "Maven build validation disabled by configuration"
             state["build_errors"] = []
             return state
 
@@ -433,11 +433,14 @@ class CodeHealerWorkflow:
                         for line in result.stdout.strip().split('\n')[-10:]:
                             self.logger.info(f"   {line}")
 
-                    # Continue workflow with warning instead of stopping
-                    self.logger.warning(
-                        "⚠️ Continuing workflow despite build failure - fixes may need manual review")
+                    # Build validation enabled and failed - STOP workflow
+                    error_msg = f"{project_type.title()} build validation failed - stopping workflow to prevent committing broken code"
+                    self.logger.error(f"❌ {error_msg}")
+                    self.logger.error(
+                        "🔒 ENABLE_MAVEN_BUILD_VALIDATION=true - workflow stopped on build failure")
                     state["build_status"] = "failed"
-                    # Don't set error state - let workflow continue
+                    state["error_message"] = error_msg
+                    state["workflow_status"] = "error"
 
             finally:
                 # Always change back to original directory
@@ -603,6 +606,13 @@ class CodeHealerWorkflow:
         """Check if there are errors in the current state."""
         if state["workflow_status"] == "error":
             return "error"
+
+        # If Maven validation is enabled, check build status to prevent committing broken code
+        if getattr(self.config, 'enable_maven_build_validation', False) and state.get("build_status") == "failed":
+            self.logger.error(
+                "❌ Build validation failed - cannot proceed to commit")
+            return "error"
+
         return "continue"
 
     def _is_valid_fix_plan(self, fix_plan: FixPlan) -> bool:
