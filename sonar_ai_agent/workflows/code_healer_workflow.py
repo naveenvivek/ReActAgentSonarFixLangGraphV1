@@ -351,22 +351,50 @@ class CodeHealerWorkflow:
 
                 # Check if build tool is available
                 try:
-                    subprocess.run([build_command[0], '--version'],
-                                   capture_output=True, timeout=10)
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    warning_msg = f"{build_command[0]} not found in PATH. Skipping build validation."
+                    # For Windows, try with .cmd extension as well
+                    cmd_variants = [build_command[0]]
+                    if os.name == 'nt' and not build_command[0].endswith('.cmd'):
+                        cmd_variants.append(build_command[0] + '.cmd')
+
+                    tool_found = False
+                    working_cmd = None
+
+                    for cmd_variant in cmd_variants:
+                        try:
+                            result = subprocess.run([cmd_variant, '--version'],
+                                                    capture_output=True, timeout=10, shell=True)
+                            if result.returncode == 0:
+                                tool_found = True
+                                working_cmd = cmd_variant
+                                # Update the command
+                                build_command[0] = cmd_variant
+                                break
+                        except (FileNotFoundError, subprocess.TimeoutExpired):
+                            continue
+
+                    if not tool_found:
+                        warning_msg = f"{build_command[0]} not found in PATH. Skipping build validation."
+                        self.logger.warning(f"⚠️ {warning_msg}")
+                        state["build_status"] = "skipped"
+                        state["build_output"] = warning_msg
+                        state["build_errors"] = []
+                        return state
+                    else:
+                        self.logger.info(f"✅ Found {working_cmd}")
+
+                except Exception as e:
+                    warning_msg = f"Error checking build tool availability: {str(e)}. Skipping build validation."
                     self.logger.warning(f"⚠️ {warning_msg}")
                     state["build_status"] = "skipped"
                     state["build_output"] = warning_msg
                     state["build_errors"] = []
-                    return state
-
-                # Run the build command
+                    return state                # Run the build command
                 result = subprocess.run(
                     build_command,
                     capture_output=True,
                     text=True,
-                    timeout=300  # 5 minute timeout
+                    timeout=300,  # 5 minute timeout
+                    shell=True   # Use shell to help with PATH resolution on Windows
                 )
 
                 # Store build results in state
