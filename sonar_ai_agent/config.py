@@ -60,7 +60,7 @@ class Config:
         self.langfuse_host = os.getenv('LANGFUSE_HOST')
 
         # Logging Configuration
-        self.log_file = os.getenv('LOG_FILE', 'logs/sonar_ai_agent.log')
+        self.log_file = self._generate_timestamped_log_path()
         self.log_level = os.getenv('LOG_LEVEL', 'INFO')
 
         # Agent Configuration
@@ -78,6 +78,22 @@ class Config:
 
         # Ensure log directory exists
         os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+
+    def _generate_timestamped_log_path(self) -> str:
+        """Generate timestamped log file path."""
+        from datetime import datetime
+
+        # Get base log directory from env or default
+        base_log_file = os.getenv('LOG_FILE', 'logs/sonar_ai_agent.log')
+        log_dir = os.path.dirname(base_log_file)
+
+        # Generate timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        # Create timestamped filename with .json extension
+        log_filename = f"sonar_ai_agent_{timestamp}.json"
+
+        return os.path.join(log_dir, log_filename)
 
     def _parse_list(self, value: str) -> List[str]:
         """Parse comma-separated string to list."""
