@@ -29,6 +29,11 @@ class CodeHealerWorkflowState(TypedDict):
     applied_fixes: List[Dict[str, Any]]
     failed_fixes: List[Dict[str, Any]]
 
+    # Build validation data
+    build_status: Optional[str]
+    build_output: Optional[str]
+    build_errors: List[str]
+
     # Status and metadata
     workflow_status: str  # 'running', 'completed', 'error'
     error_message: Optional[str]
@@ -70,6 +75,7 @@ class CodeHealerWorkflow:
         workflow.add_node("create_branch", self._create_branch_node)
         workflow.add_node("apply_fixes", self._apply_fixes_node)
         workflow.add_node("validate_changes", self._validate_changes_node)
+        workflow.add_node("build_validation", self._build_validation_node)
         workflow.add_node("commit_and_push", self._commit_and_push_node)
         workflow.add_node("create_merge_request",
                           self._create_merge_request_node)
@@ -102,6 +108,12 @@ class CodeHealerWorkflow:
 
         workflow.add_conditional_edges(
             "validate_changes",
+            self._check_for_errors,
+            {"continue": "build_validation", "error": "handle_error"}
+        )
+
+        workflow.add_conditional_edges(
+            "build_validation",
             self._check_for_errors,
             {"continue": "commit_and_push", "error": "handle_error"}
         )
@@ -281,6 +293,77 @@ class CodeHealerWorkflow:
             state["error_message"] = f"Validation error: {str(e)}"
             state["workflow_status"] = "error"
             self.logger.error(f"❌ Validation error: {e}")
+
+        return state
+
+    def _build_validation_node(self, state: CodeHealerWorkflowState) -> CodeHealerWorkflowState:
+        """Run Maven build to validate that fixes don't break the build."""
+        self.logger.info("🔨 Running Maven build validation")
+
+        try:
+            import subprocess
+            import os
+
+            # Change to the repository directory
+            repo_path = getattr(self.config, 'git_repo_path', os.getcwd())
+            original_cwd = os.getcwd()
+
+            try:
+                os.chdir(repo_path)
+                self.logger.info(f"📁 Changed directory to: {repo_path}")
+
+                # Run Maven clean install
+                self.logger.info("🏗️ Executing: mvn clean install")
+                result = subprocess.run(
+                    ['mvn', 'clean', 'install'],
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5 minute timeout
+                )
+
+                # Store build results in state
+                state["build_status"] = "success" if result.returncode == 0 else "failed"
+                state["build_output"] = result.stdout
+                state["build_errors"] = result.stderr.split(
+                    '\n') if result.stderr else []
+
+                if result.returncode == 0:
+                    self.logger.info(
+                        "✅ Maven build validation passed successfully")
+                else:
+                    self.logger.error(
+                        f"❌ Maven build validation failed with exit code: {result.returncode}")
+                    self.logger.error(f"Build errors: {result.stderr}")
+                    state["error_message"] = f"Maven build failed: {result.stderr}"
+                    state["workflow_status"] = "error"
+
+            finally:
+                # Always change back to original directory
+                os.chdir(original_cwd)
+
+        except FileNotFoundError:
+            error_msg = "Maven (mvn) not found. Please install Maven and ensure it's in PATH."
+            self.logger.error(f"❌ {error_msg}")
+            state["error_message"] = error_msg
+            state["workflow_status"] = "error"
+            state["build_status"] = "error"
+            state["build_errors"] = [error_msg]
+
+        except subprocess.TimeoutExpired:
+            error_msg = "Maven build timed out after 5 minutes"
+            self.logger.error(f"❌ {error_msg}")
+            state["error_message"] = error_msg
+            state["workflow_status"] = "error"
+            state["build_status"] = "timeout"
+            state["build_errors"] = [error_msg]
+
+        except Exception as e:
+            error_msg = f"Build validation error: {str(e)}"
+            self.logger.error(f"❌ {error_msg}")
+            state["error_message"] = error_msg
+            state["workflow_status"] = "error"
+            state["build_status"] = "error"
+            state["build_errors"] = [str(e)]
 
         return state
 
@@ -546,6 +629,9 @@ class CodeHealerWorkflow:
             branch_name=None,
             applied_fixes=[],
             failed_fixes=[],
+            build_status=None,
+            build_output=None,
+            build_errors=[],
             workflow_status="initialized",
             error_message=None,
             current_fix_index=0,

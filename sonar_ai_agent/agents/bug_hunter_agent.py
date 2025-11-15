@@ -380,6 +380,7 @@ class BugHunterAgent:
     def _get_rule_based_fixes(self) -> Dict[str, Dict[str, Any]]:
         """Get predefined fixes for common SonarQube rules."""
         return {
+            # Python rules
             "python:S125": {
                 "description": "Remove commented out code",
                 "solution": "Delete commented code blocks",
@@ -416,6 +417,47 @@ class BugHunterAgent:
                 "description": "Split long lines",
                 "solution": "Break line into multiple lines",
                 "confidence": 0.6,
+                "effort": "Low",
+                "side_effects": [],
+                "fix_type": "replace"
+            },
+            # Java rules
+            "java:S6437": {
+                "description": "Remove hardcoded password",
+                "solution": "Use environment variable or configuration for password: String password = System.getenv(\"DB_PASSWORD\");",
+                "confidence": 0.9,
+                "effort": "Medium",
+                "side_effects": ["Add environment variable configuration"],
+                "fix_type": "replace"
+            },
+            "java:S2095": {
+                "description": "Use try-with-resources for resource management",
+                "solution": "Wrap resource in try-with-resources block: try (ResourceType resource = new ResourceType()) { /* use resource */ }",
+                "confidence": 0.8,
+                "effort": "Medium",
+                "side_effects": ["May change exception handling"],
+                "fix_type": "replace"
+            },
+            "java:S1075": {
+                "description": "Remove hardcoded path",
+                "solution": "Use system property or configuration: String path = System.getProperty(\"user.dir\") + \"/data/\";",
+                "confidence": 0.7,
+                "effort": "Medium",
+                "side_effects": ["Add path configuration"],
+                "fix_type": "replace"
+            },
+            "java:S106": {
+                "description": "Use proper logging instead of System.out",
+                "solution": "Replace with logger: logger.info(message);",
+                "confidence": 0.8,
+                "effort": "Low",
+                "side_effects": ["Add logging dependency if missing"],
+                "fix_type": "replace"
+            },
+            "java:S1192": {
+                "description": "Extract string literal to constant",
+                "solution": "Define as constant: private static final String CONSTANT_NAME = \"string_value\";",
+                "confidence": 0.7,
                 "effort": "Low",
                 "side_effects": [],
                 "fix_type": "replace"

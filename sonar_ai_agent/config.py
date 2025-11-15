@@ -34,7 +34,7 @@ class Config:
             os.getenv('SONAR_REQUEST_TIMEOUT', '30'))
 
         # Git Configuration
-        self.git_repo_path = os.getenv('GIT_REPO_PATH', os.getcwd())
+        self.git_repo_path = os.getenv('TARGET_GITLAB_REPO_PATH', os.getcwd())
         self.git_remote_name = os.getenv('GIT_REMOTE_NAME', 'origin')
         self.git_default_branch = os.getenv('GIT_DEFAULT_BRANCH', 'main')
 
