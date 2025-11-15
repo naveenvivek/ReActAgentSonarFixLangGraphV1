@@ -297,8 +297,8 @@ class CodeHealerWorkflow:
         return state
 
     def _build_validation_node(self, state: CodeHealerWorkflowState) -> CodeHealerWorkflowState:
-        """Run Maven build to validate that fixes don't break the build."""
-        self.logger.info("🔨 Running Maven build validation")
+        """Run build validation to ensure fixes don't break the build."""
+        self.logger.info("🔨 Running build validation")
 
         try:
             import subprocess
@@ -308,14 +308,62 @@ class CodeHealerWorkflow:
             repo_path = getattr(self.config, 'git_repo_path', os.getcwd())
             original_cwd = os.getcwd()
 
+            # Detect project type and build tool
+            project_type = None
+            build_command = None
+
             try:
                 os.chdir(repo_path)
                 self.logger.info(f"📁 Changed directory to: {repo_path}")
 
-                # Run Maven clean install
-                self.logger.info("🏗️ Executing: mvn clean install")
+                # Check what type of project this is
+                if os.path.exists('pom.xml'):
+                    project_type = 'maven'
+                    build_command = ['mvn', 'clean', 'install']
+                elif os.path.exists('build.gradle') or os.path.exists('build.gradle.kts'):
+                    project_type = 'gradle'
+                    if os.path.exists('gradlew'):
+                        build_command = ['./gradlew', 'clean', 'build']
+                    else:
+                        build_command = ['gradle', 'clean', 'build']
+                elif os.path.exists('package.json'):
+                    project_type = 'npm'
+                    build_command = ['npm', 'run', 'build']
+                elif os.path.exists('requirements.txt') or os.path.exists('setup.py'):
+                    project_type = 'python'
+                    # For Python, we can run syntax validation instead
+                    self.logger.info(
+                        "🐍 Python project detected, skipping build validation (syntax already validated)")
+                    state["build_status"] = "skipped"
+                    state["build_output"] = "Python project - syntax validation already performed"
+                    state["build_errors"] = []
+                    return state
+                else:
+                    self.logger.info(
+                        "❓ Unknown project type, skipping build validation")
+                    state["build_status"] = "skipped"
+                    state["build_output"] = "Unknown project type - build validation skipped"
+                    state["build_errors"] = []
+                    return state
+
+                self.logger.info(
+                    f"🏗️ {project_type.title()} project detected, executing: {' '.join(build_command)}")
+
+                # Check if build tool is available
+                try:
+                    subprocess.run([build_command[0], '--version'],
+                                   capture_output=True, timeout=10)
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    warning_msg = f"{build_command[0]} not found in PATH. Skipping build validation."
+                    self.logger.warning(f"⚠️ {warning_msg}")
+                    state["build_status"] = "skipped"
+                    state["build_output"] = warning_msg
+                    state["build_errors"] = []
+                    return state
+
+                # Run the build command
                 result = subprocess.run(
-                    ['mvn', 'clean', 'install'],
+                    build_command,
                     capture_output=True,
                     text=True,
                     timeout=300  # 5 minute timeout
@@ -329,28 +377,20 @@ class CodeHealerWorkflow:
 
                 if result.returncode == 0:
                     self.logger.info(
-                        "✅ Maven build validation passed successfully")
+                        f"✅ {project_type.title()} build validation passed successfully")
                 else:
                     self.logger.error(
-                        f"❌ Maven build validation failed with exit code: {result.returncode}")
+                        f"❌ {project_type.title()} build validation failed with exit code: {result.returncode}")
                     self.logger.error(f"Build errors: {result.stderr}")
-                    state["error_message"] = f"Maven build failed: {result.stderr}"
+                    state["error_message"] = f"{project_type.title()} build failed: {result.stderr}"
                     state["workflow_status"] = "error"
 
             finally:
                 # Always change back to original directory
                 os.chdir(original_cwd)
 
-        except FileNotFoundError:
-            error_msg = "Maven (mvn) not found. Please install Maven and ensure it's in PATH."
-            self.logger.error(f"❌ {error_msg}")
-            state["error_message"] = error_msg
-            state["workflow_status"] = "error"
-            state["build_status"] = "error"
-            state["build_errors"] = [error_msg]
-
         except subprocess.TimeoutExpired:
-            error_msg = "Maven build timed out after 5 minutes"
+            error_msg = f"{project_type.title()} build timed out after 5 minutes"
             self.logger.error(f"❌ {error_msg}")
             state["error_message"] = error_msg
             state["workflow_status"] = "error"

@@ -4,54 +4,54 @@
     "file_path": "src/main/java/com/example/springbootapp/controller/UserController.java",
     "line_number": 43,
     "issue_description": "Revoke and change this password, as it is compromised.",
-    "problem_analysis": "Rule-based analysis of VULNERABILITY issue in src/main/java/com/example/springbootapp/controller/UserController.java",
-    "proposed_solution": "Apply recommended fix for rule java:S6437",
-    "confidence_score": 0.6,
+    "problem_analysis": "Rule-based analysis: Remove hardcoded password (AI analysis unavailable)",
+    "proposed_solution": "Use environment variable or configuration for password: String password = System.getenv(\"DB_PASSWORD\");",
+    "confidence_score": 0.9,
     "estimated_effort": "Medium",
     "potential_side_effects": [
-      "Review recommended before applying"
+      "Add environment variable configuration"
     ],
     "fix_type": "replace",
     "severity": "BLOCKER",
-    "created_at": "2025-11-15T18:42:26.159868",
+    "created_at": "2025-11-15T18:55:13.723175",
     "project_key": "naveenvivek_SpringBootAppSonarAI",
-    "stored_at": "2025-11-15T18:42:27.661661"
+    "stored_at": "2025-11-15T18:55:15.143910"
   },
   {
     "issue_key": "fbf3862c-84fb-41dc-bb84-51d0732b07fe",
     "file_path": "src/main/java/com/example/springbootapp/controller/UserController.java",
     "line_number": 43,
     "issue_description": "Use try-with-resources or close this \"Connection\" in a \"finally\" clause.",
-    "problem_analysis": "Rule-based analysis of BUG issue in src/main/java/com/example/springbootapp/controller/UserController.java",
-    "proposed_solution": "Apply recommended fix for rule java:S2095",
-    "confidence_score": 0.6,
+    "problem_analysis": "Rule-based analysis: Use try-with-resources for resource management (AI analysis unavailable)",
+    "proposed_solution": "Wrap resource in try-with-resources block: try (ResourceType resource = new ResourceType()) { /* use resource */ }",
+    "confidence_score": 0.8,
     "estimated_effort": "Medium",
     "potential_side_effects": [
-      "Review recommended before applying"
+      "May change exception handling"
     ],
     "fix_type": "replace",
     "severity": "BLOCKER",
-    "created_at": "2025-11-15T18:42:26.533513",
+    "created_at": "2025-11-15T18:55:14.029026",
     "project_key": "naveenvivek_SpringBootAppSonarAI",
-    "stored_at": "2025-11-15T18:42:27.662009"
+    "stored_at": "2025-11-15T18:55:15.144204"
   },
   {
     "issue_key": "6dbf5157-aff4-46cc-adeb-fb823eb144a5",
     "file_path": "src/main/java/com/example/springbootapp/controller/UserController.java",
     "line_number": 44,
     "issue_description": "Use try-with-resources or close this \"Statement\" in a \"finally\" clause.",
-    "problem_analysis": "Rule-based analysis of BUG issue in src/main/java/com/example/springbootapp/controller/UserController.java",
-    "proposed_solution": "Apply recommended fix for rule java:S2095",
-    "confidence_score": 0.6,
+    "problem_analysis": "Rule-based analysis: Use try-with-resources for resource management (AI analysis unavailable)",
+    "proposed_solution": "Wrap resource in try-with-resources block: try (ResourceType resource = new ResourceType()) { /* use resource */ }",
+    "confidence_score": 0.8,
     "estimated_effort": "Medium",
     "potential_side_effects": [
-      "Review recommended before applying"
+      "May change exception handling"
     ],
     "fix_type": "replace",
     "severity": "BLOCKER",
-    "created_at": "2025-11-15T18:42:26.841096",
+    "created_at": "2025-11-15T18:55:14.513184",
     "project_key": "naveenvivek_SpringBootAppSonarAI",
-    "stored_at": "2025-11-15T18:42:27.662381"
+    "stored_at": "2025-11-15T18:55:15.144526"
   },
   {
     "issue_key": "6bc4482b-8ffa-4dae-9266-da86d3e08c79",
@@ -67,9 +67,9 @@
     ],
     "fix_type": "replace",
     "severity": "MAJOR",
-    "created_at": "2025-11-15T18:42:27.177944",
+    "created_at": "2025-11-15T18:55:14.870881",
     "project_key": "naveenvivek_SpringBootAppSonarAI",
-    "stored_at": "2025-11-15T18:42:27.662664"
+    "stored_at": "2025-11-15T18:55:15.144801"
   },
   {
     "issue_key": "8dfdcb6a-630e-420b-b0a0-d7d7394dd249",
@@ -85,8 +85,8 @@
     ],
     "fix_type": "replace",
     "severity": "MAJOR",
-    "created_at": "2025-11-15T18:42:27.659893",
+    "created_at": "2025-11-15T18:55:15.141967",
     "project_key": "naveenvivek_SpringBootAppSonarAI",
-    "stored_at": "2025-11-15T18:42:27.662937"
+    "stored_at": "2025-11-15T18:55:15.145078"
   }
 ]
