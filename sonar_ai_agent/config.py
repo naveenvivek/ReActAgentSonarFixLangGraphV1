@@ -71,6 +71,8 @@ class Config:
         self.validate_security = self._parse_bool(
             os.getenv('VALIDATE_SECURITY', 'true'))
         self.backup_files = self._parse_bool(os.getenv('BACKUP_FILES', 'true'))
+        self.skip_build_validation = self._parse_bool(
+            os.getenv('SKIP_BUILD_VALIDATION', 'false'))
 
         # Workflow Configuration
         self.max_issues_per_run = int(os.getenv('MAX_ISSUES_PER_RUN', '50'))

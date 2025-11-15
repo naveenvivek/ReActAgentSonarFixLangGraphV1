@@ -1,0 +1,86 @@
+[
+  {
+    "issue_key": "246e91e3-f850-4897-8523-4c0b711c042f",
+    "file_path": "src/main/java/com/example/springbootapp/controller/UserController.java",
+    "line_number": 43,
+    "issue_description": "Revoke and change this password, as it is compromised.",
+    "problem_analysis": "The code contains a hardcoded password, which is a security risk.",
+    "proposed_solution": "Replace the hardcoded password with a dynamically generated one.",
+    "confidence_score": 0.95,
+    "estimated_effort": "Medium",
+    "potential_side_effects": [
+      "None"
+    ],
+    "fix_type": "replace",
+    "severity": "BLOCKER",
+    "created_at": "2025-11-15T19:38:55.628251",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T19:39:44.077748"
+  },
+  {
+    "issue_key": "fbf3862c-84fb-41dc-bb84-51d0732b07fe",
+    "file_path": "src/main/java/com/example/springbootapp/controller/UserController.java",
+    "line_number": 43,
+    "issue_description": "Use try-with-resources or close this \"Connection\" in a \"finally\" clause.",
+    "problem_analysis": "The code uses a 'Connection' object without closing it properly, which can lead to resource leaks. The 'try-with-resources' statement is recommended to ensure proper resource management.",
+    "proposed_solution": "Replace the code with the following try-with-resources statement:",
+    "confidence_score": 0.85,
+    "estimated_effort": "Low",
+    "potential_side_effects": "None",
+    "fix_type": "replace",
+    "severity": "BLOCKER",
+    "created_at": "2025-11-15T19:39:11.115307",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T19:39:44.078130"
+  },
+  {
+    "issue_key": "6dbf5157-aff4-46cc-adeb-fb823eb144a5",
+    "file_path": "src/main/java/com/example/springbootapp/controller/UserController.java",
+    "line_number": 44,
+    "issue_description": "Use try-with-resources or close this \"Statement\" in a \"finally\" clause.",
+    "problem_analysis": "The code uses a try-with-resources statement to automatically close the statement, but it does not use a finally block to close the 'Statement' in case of an exception.",
+    "proposed_solution": "Add a finally block to close the 'Statement' in case of an exception.",
+    "confidence_score": 0.85,
+    "estimated_effort": "Low",
+    "potential_side_effects": [
+      "Closes the 'Statement' in case of an exception"
+    ],
+    "fix_type": "add",
+    "severity": "BLOCKER",
+    "created_at": "2025-11-15T19:39:25.693349",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T19:39:44.078595"
+  },
+  {
+    "issue_key": "6bc4482b-8ffa-4dae-9266-da86d3e08c79",
+    "file_path": "src/main/java/com/example/springbootapp/controller/UserController.java",
+    "line_number": 53,
+    "issue_description": "Replace generic exceptions with specific library exceptions or a custom exception.",
+    "problem_analysis": "The code uses a generic exception type (Exception) instead of a more specific exception type from the Spring Boot library (ResponseStatusException). This can make the code less readable and harder to maintain.",
+    "proposed_solution": "Replace the generic exception type with a specific exception type from the Spring Boot library.",
+    "confidence_score": 0.85,
+    "estimated_effort": "Low",
+    "potential_side_effects": [],
+    "fix_type": "replace",
+    "severity": "MAJOR",
+    "created_at": "2025-11-15T19:39:35.947317",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T19:39:44.078997"
+  },
+  {
+    "issue_key": "8dfdcb6a-630e-420b-b0a0-d7d7394dd249",
+    "file_path": "src/main/java/com/example/springbootapp/config/WebConfig.java",
+    "line_number": 25,
+    "issue_description": "This block of commented-out lines of code should be removed.",
+    "problem_analysis": "The commented-out lines of code should be removed.",
+    "proposed_solution": "Remove the commented-out lines of code.",
+    "confidence_score": 0.85,
+    "estimated_effort": "Low",
+    "potential_side_effects": [],
+    "fix_type": "delete",
+    "severity": "MAJOR",
+    "created_at": "2025-11-15T19:39:44.075405",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T19:39:44.079485"
+  }
+]

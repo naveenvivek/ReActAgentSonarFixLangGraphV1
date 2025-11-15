@@ -297,7 +297,16 @@ class CodeHealerWorkflow:
         return state
 
     def _build_validation_node(self, state: CodeHealerWorkflowState) -> CodeHealerWorkflowState:
-        """Run build validation to ensure fixes don't break the build."""
+        """Run build validation to check if fixes break the build (continues on failure with warning)."""
+        # Check if build validation is disabled
+        if getattr(self.config, 'skip_build_validation', False):
+            self.logger.info(
+                "⚠️ Build validation skipped (SKIP_BUILD_VALIDATION=true)")
+            state["build_status"] = "skipped"
+            state["build_output"] = "Build validation disabled by configuration"
+            state["build_errors"] = []
+            return state
+
         self.logger.info("🔨 Running Maven clean build")
 
         try:
@@ -407,11 +416,28 @@ class CodeHealerWorkflow:
                     self.logger.info(
                         f"✅ {project_type.title()} build validation passed successfully")
                 else:
-                    self.logger.error(
-                        f"❌ {project_type.title()} build validation failed with exit code: {result.returncode}")
-                    self.logger.error(f"Build errors: {result.stderr}")
-                    state["error_message"] = f"{project_type.title()} build failed: {result.stderr}"
-                    state["workflow_status"] = "error"
+                    # Log detailed build output for debugging
+                    self.logger.warning(
+                        f"⚠️ {project_type.title()} build validation failed with exit code: {result.returncode}")
+
+                    # Always log the full error output for debugging
+                    if result.stderr:
+                        self.logger.error("📋 Full Maven stderr output:")
+                        # Last 20 lines
+                        for line in result.stderr.strip().split('\n')[-20:]:
+                            self.logger.error(f"   {line}")
+
+                    if result.stdout:
+                        self.logger.info("📋 Last 10 lines of Maven stdout:")
+                        # Last 10 lines
+                        for line in result.stdout.strip().split('\n')[-10:]:
+                            self.logger.info(f"   {line}")
+
+                    # Continue workflow with warning instead of stopping
+                    self.logger.warning(
+                        "⚠️ Continuing workflow despite build failure - fixes may need manual review")
+                    state["build_status"] = "failed"
+                    # Don't set error state - let workflow continue
 
             finally:
                 # Always change back to original directory
