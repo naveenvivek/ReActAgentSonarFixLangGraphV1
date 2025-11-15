@@ -19,15 +19,6 @@ class FixPlanStorage:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(exist_ok=True)
 
-        # Create organized directory structure
-        self.by_project_dir = self.base_dir / "by_project"
-        self.by_date_dir = self.base_dir / "by_date"
-        self.by_severity_dir = self.base_dir / "by_severity"
-        self.archive_dir = self.base_dir / "archive"
-
-        for dir_path in [self.by_project_dir, self.by_date_dir, self.by_severity_dir, self.archive_dir]:
-            dir_path.mkdir(exist_ok=True)
-
     def save_fix_plan(self, fix_plan: FixPlan, project_key: str) -> bool:
         """Save a fix plan to persistent storage."""
         try:
@@ -38,30 +29,20 @@ class FixPlanStorage:
             fix_plan_dict["project_key"] = project_key
             fix_plan_dict["stored_at"] = datetime.now().isoformat()
 
-            # Save by project
-            project_file = self.by_project_dir / f"{project_key}.json"
+            # Save to single project file
+            project_file = self.base_dir / f"{project_key}.json"
             self._append_to_json_file(project_file, fix_plan_dict)
-
-            # Save by date
-            date_str = datetime.now().strftime("%Y-%m-%d")
-            date_file = self.by_date_dir / f"{date_str}.json"
-            self._append_to_json_file(date_file, fix_plan_dict)
-
-            # Save by severity
-            severity = fix_plan.severity.lower()
-            severity_file = self.by_severity_dir / f"{severity}.json"
-            self._append_to_json_file(severity_file, fix_plan_dict)
 
             return True
 
         except Exception as e:
-            print(f"Error saving fix plan {fix_plan.issue_key}: {e}")
+            print(f"❌ Error saving fix plan {fix_plan.issue_key}: {e}")
             return False
 
     def load_fix_plan(self, issue_key: str, project_key: str) -> Optional[FixPlan]:
         """Load a specific fix plan by issue key and project."""
         try:
-            project_file = self.by_project_dir / f"{project_key}.json"
+            project_file = self.base_dir / f"{project_key}.json"
             if not project_file.exists():
                 return None
 
@@ -79,7 +60,7 @@ class FixPlanStorage:
     def get_fix_plans_by_project(self, project_key: str) -> List[FixPlan]:
         """Get all fix plans for a specific project."""
         try:
-            project_file = self.by_project_dir / f"{project_key}.json"
+            project_file = self.base_dir / f"{project_key}.json"
             if not project_file.exists():
                 return []
 
@@ -87,42 +68,34 @@ class FixPlanStorage:
             return [self._dict_to_fix_plan(plan_dict) for plan_dict in fix_plans_dict]
 
         except Exception as e:
-            print(f"Error loading fix plans for project {project_key}: {e}")
+            print(f"❌ Error loading fix plans for project {project_key}: {e}")
             return []
 
     def get_fix_plans_by_date(self, date_str: str) -> List[FixPlan]:
         """Get all fix plans for a specific date (YYYY-MM-DD)."""
-        try:
-            date_file = self.by_date_dir / f"{date_str}.json"
-            if not date_file.exists():
-                return []
-
-            fix_plans_dict = self._load_json_file(date_file)
-            return [self._dict_to_fix_plan(plan_dict) for plan_dict in fix_plans_dict]
-
-        except Exception as e:
-            print(f"Error loading fix plans for date {date_str}: {e}")
-            return []
+        all_plans = []
+        for project in self.list_projects():
+            project_plans = self.get_fix_plans_by_project(project)
+            for plan in project_plans:
+                if plan.created_at and plan.created_at.strftime("%Y-%m-%d") == date_str:
+                    all_plans.append(plan)
+        return all_plans
 
     def get_fix_plans_by_severity(self, severity: str) -> List[FixPlan]:
         """Get all fix plans for a specific severity."""
-        try:
-            severity_file = self.by_severity_dir / f"{severity.lower()}.json"
-            if not severity_file.exists():
-                return []
-
-            fix_plans_dict = self._load_json_file(severity_file)
-            return [self._dict_to_fix_plan(plan_dict) for plan_dict in fix_plans_dict]
-
-        except Exception as e:
-            print(f"Error loading fix plans for severity {severity}: {e}")
-            return []
+        all_plans = []
+        for project in self.list_projects():
+            project_plans = self.get_fix_plans_by_project(project)
+            for plan in project_plans:
+                if plan.severity.lower() == severity.lower():
+                    all_plans.append(plan)
+        return all_plans
 
     def list_projects(self) -> List[str]:
         """List all projects with stored fix plans."""
         try:
             projects = []
-            for file_path in self.by_project_dir.glob("*.json"):
+            for file_path in self.base_dir.glob("*.json"):
                 project_key = file_path.stem
                 projects.append(project_key)
             return sorted(projects)

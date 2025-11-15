@@ -28,6 +28,11 @@ class Config:
             os.getenv('SONAR_DEFAULT_TYPES', 'BUG,VULNERABILITY,CODE_SMELL')
         )
 
+        # Issue limits and pagination
+        self.sonar_max_issues = int(os.getenv('SONAR_MAX_ISSUES', '50'))
+        self.sonar_request_timeout = int(
+            os.getenv('SONAR_REQUEST_TIMEOUT', '30'))
+
         # Git Configuration
         self.git_repo_path = os.getenv('GIT_REPO_PATH', os.getcwd())
         self.git_remote_name = os.getenv('GIT_REMOTE_NAME', 'origin')
@@ -113,7 +118,9 @@ class Config:
             'token': self.sonar_token,
             'project_key': self.sonar_project_key,
             'default_severities': self.sonar_default_severities,
-            'default_types': self.sonar_default_types
+            'default_types': self.sonar_default_types,
+            'max_issues': self.sonar_max_issues,
+            'request_timeout': self.sonar_request_timeout
         }
 
     def get_git_config(self) -> dict:

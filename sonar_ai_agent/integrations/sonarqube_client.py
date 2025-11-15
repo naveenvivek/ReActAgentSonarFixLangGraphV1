@@ -28,9 +28,13 @@ class SonarQubeClient:
         try:
             url = urljoin(self.base_url, '/api/issues/search')
 
+            # Use configured max issues limit
+            max_issues = getattr(self.config, 'sonar_max_issues', 50)
+            timeout = getattr(self.config, 'sonar_request_timeout', 30)
+
             params = {
                 'componentKeys': project_key,
-                'ps': 500,  # Page size
+                'ps': max_issues,  # Page size from config
                 'p': 1      # Page number
             }
 
@@ -40,7 +44,7 @@ class SonarQubeClient:
             if types:
                 params['types'] = ','.join(types)
 
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=timeout)
             response.raise_for_status()
 
             data = response.json()
@@ -53,6 +57,9 @@ class SonarQubeClient:
                 if issue:
                     issues.append(issue)
 
+            # Log how many issues were retrieved
+            print(
+                f"📊 Retrieved {len(issues)} issues (max configured: {max_issues})")
             return issues
 
         except Exception as e:

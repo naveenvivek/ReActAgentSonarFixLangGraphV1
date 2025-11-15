@@ -14,6 +14,7 @@ from ..models import SonarIssue, FixPlan, AgentMetrics
 from ..config import Config
 from ..utils.logger import get_logger
 from ..integrations.sonarqube_client import SonarQubeClient
+from ..integrations.bedrock_client import BedrockClient
 
 
 class BugHunterAgent:
@@ -28,6 +29,9 @@ class BugHunterAgent:
 
         # Initialize SonarQube client
         self.sonar_client = SonarQubeClient(config)
+
+        # Initialize Bedrock client for AI analysis
+        self.bedrock_client = BedrockClient(config)
 
         # Metrics tracking
         self.metrics = None
@@ -217,23 +221,41 @@ class BugHunterAgent:
             return self._rule_based_analyze_issue(issue, source_context)
 
     def _ai_analyze_issue(self, issue: SonarIssue, source_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Use AI (like AWS Bedrock) to analyze the issue."""
+        """Use AI (AWS Bedrock) to analyze the issue."""
         try:
-            # This would integrate with your AI service (AWS Bedrock, etc.)
-            # For now, providing a structured analysis
+            # Try Bedrock AI analysis first
+            if self.bedrock_client.is_available:
+                self.logger.info(
+                    f"🤖 Using Bedrock AI analysis for issue: {issue.key}")
+                ai_analysis = self.bedrock_client.analyze_issue(
+                    issue, source_context)
 
-            analysis = {
-                "issue_type": issue.type,
-                "severity": getattr(issue, 'severity', 'MINOR'),
-                "category": self._categorize_issue(issue),
-                "root_cause": self._identify_root_cause(issue, source_context),
-                "impact_assessment": self._assess_impact(issue),
-                "confidence": self._calculate_confidence(issue, source_context),
-                "complexity": self._assess_complexity(issue),
-                "priority": self._calculate_priority(issue)
-            }
+                if ai_analysis:
+                    # Combine AI analysis with standard fields
+                    analysis = {
+                        "issue_type": issue.type,
+                        "severity": getattr(issue, 'severity', 'MINOR'),
+                        "category": ai_analysis.get("category", self._categorize_issue(issue)),
+                        "root_cause": ai_analysis.get("root_cause", self._identify_root_cause(issue, source_context)),
+                        "impact_assessment": ai_analysis.get("impact_assessment", self._assess_impact(issue)),
+                        "confidence": ai_analysis.get("confidence", self._calculate_confidence(issue, source_context)),
+                        "complexity": ai_analysis.get("complexity", self._assess_complexity(issue)),
+                        "priority": ai_analysis.get("priority", self._calculate_priority(issue)),
+                        "technical_details": ai_analysis.get("technical_details", "")
+                    }
 
-            return analysis
+                    self.logger.info(
+                        f"✅ Bedrock AI analysis completed for issue: {issue.key}")
+                    return analysis
+                else:
+                    self.logger.warning(
+                        f"⚠️ Bedrock analysis returned empty result for {issue.key}, falling back to rule-based")
+            else:
+                self.logger.warning(
+                    f"⚠️ Bedrock client not available, falling back to rule-based analysis for {issue.key}")
+
+            # Fallback to rule-based analysis
+            return self._rule_based_analyze_issue(issue, source_context)
 
         except Exception as e:
             self.logger.error(f"❌ AI analysis failed for {issue.key}: {e}")
@@ -284,37 +306,58 @@ class BugHunterAgent:
 
     def _ai_generate_fix_plan(self, issue: SonarIssue, source_context: Dict[str, Any]) -> Dict[str, Any]:
         """Use AI to generate comprehensive fix plan."""
-        # This would integrate with your AI service
-        # For now, providing a structured approach
+        try:
+            # Try Bedrock AI fix plan generation first
+            if self.bedrock_client.is_available:
+                self.logger.info(
+                    f"🤖 Using Bedrock AI to generate fix plan for issue: {issue.key}")
+                ai_fix_plan = self.bedrock_client.generate_fix_plan(
+                    issue, source_context)
 
-        rule_fixes = self._get_rule_based_fixes()
-        rule_key = issue.rule
+                if ai_fix_plan:
+                    self.logger.info(
+                        f"✅ Bedrock AI fix plan generated for issue: {issue.key}")
+                    return ai_fix_plan
+                else:
+                    self.logger.warning(
+                        f"⚠️ Bedrock fix plan generation returned empty result for {issue.key}, falling back to rule-based")
+            else:
+                self.logger.warning(
+                    f"⚠️ Bedrock client not available, falling back to rule-based fix plan for {issue.key}")
 
-        if rule_key in rule_fixes:
-            base_fix = rule_fixes[rule_key]
+            # Fallback to enhanced rule-based approach
+            rule_fixes = self._get_rule_based_fixes()
+            rule_key = issue.rule
 
-            # Enhance with AI analysis
-            fix_plan = {
-                "analysis": f"AI Analysis: {base_fix['description']}",
-                "solution": base_fix['solution'],
-                # AI boost
-                "confidence": min(0.9, base_fix['confidence'] + 0.2),
-                "effort": base_fix['effort'],
-                "side_effects": base_fix.get('side_effects', []),
-                "fix_type": base_fix.get('fix_type', 'replace')
-            }
-        else:
-            # Generic AI-based fix plan
-            fix_plan = {
-                "analysis": f"AI Analysis of {issue.type} issue in {source_context['file_path']}",
-                "solution": f"Recommended fix for rule {issue.rule}",
-                "confidence": 0.6,
-                "effort": "Medium",
-                "side_effects": ["Review recommended before applying"],
-                "fix_type": "replace"
-            }
+            if rule_key in rule_fixes:
+                base_fix = rule_fixes[rule_key]
 
-        return fix_plan
+                # Enhance with contextual analysis
+                fix_plan = {
+                    "analysis": f"Rule-based analysis: {base_fix['description']} (AI analysis unavailable)",
+                    "solution": base_fix['solution'],
+                    "confidence": base_fix['confidence'],
+                    "effort": base_fix['effort'],
+                    "side_effects": base_fix.get('side_effects', []),
+                    "fix_type": base_fix.get('fix_type', 'replace')
+                }
+            else:
+                # Generic rule-based fix plan
+                fix_plan = {
+                    "analysis": f"Rule-based analysis of {issue.type} issue in {source_context['file_path']}",
+                    "solution": f"Apply recommended fix for rule {issue.rule}",
+                    "confidence": 0.6,
+                    "effort": "Medium",
+                    "side_effects": ["Review recommended before applying"],
+                    "fix_type": "replace"
+                }
+
+            return fix_plan
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ AI fix plan generation failed for {issue.key}: {e}")
+            return self._rule_based_generate_fix_plan(issue, source_context)
 
     def _rule_based_generate_fix_plan(self, issue: SonarIssue, source_context: Dict[str, Any]) -> Dict[str, Any]:
         """Use rule-based approach to generate fix plan."""
@@ -458,11 +501,13 @@ class BugHunterAgent:
                 "SonarQube issue analysis",
                 "Fix plan generation",
                 "Source code inspection",
-                "AI-powered analysis",
+                "AI-powered analysis (Bedrock)",
                 "Rule-based fixes",
                 "Metrics tracking"
             ],
             "supported_languages": ["Python", "Java", "JavaScript", "TypeScript"],
             "ai_analysis_enabled": self.use_ai_analysis,
-            "integration": "SonarQube API"
+            "bedrock_available": self.bedrock_client.is_available if hasattr(self.bedrock_client, 'is_available') else False,
+            "bedrock_model": self.config.bedrock_model_id,
+            "integration": "SonarQube API + AWS Bedrock"
         }
