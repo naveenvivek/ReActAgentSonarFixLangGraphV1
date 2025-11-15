@@ -1,121 +1,150 @@
 """
-Configuration management for SonarQube AI Agent system.
-Loads settings from environment variables with validation.
+Configuration management for SonarQube AI Agent.
 """
 
 import os
-from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 from dotenv import load_dotenv
 
 
-@dataclass
 class Config:
-    """Configuration class for SonarQube AI Agent system."""
-    
+    """Configuration class for SonarQube AI Agent."""
+
     def __init__(self):
         """Initialize configuration from environment variables."""
         # Load environment variables from .env file
         load_dotenv()
-        
+
         # SonarQube Configuration
-        self.sonar_url: str = os.getenv("SONAR_URL", "http://localhost:9100")
-        self.sonar_token: Optional[str] = os.getenv("SONAR_TOKEN")
-        self.sonar_project_key: str = os.getenv("SONAR_PROJECT_KEY", "naveenvivek_SpringBootAppSonarAI")
-        
-        # Target Application Repository
-        self.target_repo_url: Optional[str] = os.getenv("TARGET_REPO_URL")
-        self.target_repo_path: Optional[str] = os.getenv("TARGET_REPO_PATH")
-        self.target_repo_branch: str = os.getenv("TARGET_REPO_BRANCH", "main")
-        
-        # AI Configuration
-        self.ollama_url: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
-        self.ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
-        
-        # Logging Configuration
-        self.log_level: str = os.getenv("LOG_LEVEL", "INFO")
-        self.log_file: str = os.getenv("LOG_FILE", "logs/sonar_ai_agent.log")
-        self.log_max_size: int = int(os.getenv("LOG_MAX_SIZE", "10485760"))  # 10MB default
-        self.log_backup_count: int = int(os.getenv("LOG_BACKUP_COUNT", "5"))
-        
-        # Structured Logging Configuration
-        self.structured_logging_enabled: bool = os.getenv("STRUCTURED_LOGGING_ENABLED", "true").lower() == "true"
-        self.console_color_enabled: bool = os.getenv("CONSOLE_COLOR_ENABLED", "true").lower() == "true"
-        self.metadata_max_depth: int = int(os.getenv("METADATA_MAX_DEPTH", "3"))
-        self.metadata_max_length: int = int(os.getenv("METADATA_MAX_LENGTH", "1000"))
-        self.performance_logging_enabled: bool = os.getenv("PERFORMANCE_LOGGING_ENABLED", "true").lower() == "true"
-        self.error_stack_trace_enabled: bool = os.getenv("ERROR_STACK_TRACE_ENABLED", "true").lower() == "true"
-        self.correlation_tracking_enabled: bool = os.getenv("CORRELATION_TRACKING_ENABLED", "true").lower() == "true"
-        
-        # Performance Thresholds
-        self.slow_operation_threshold_ms: int = int(os.getenv("SLOW_OPERATION_THRESHOLD_MS", "5000"))  # 5 seconds
-        self.very_slow_operation_threshold_ms: int = int(os.getenv("VERY_SLOW_OPERATION_THRESHOLD_MS", "10000"))  # 10 seconds
-        self.low_throughput_threshold: float = float(os.getenv("LOW_THROUGHPUT_THRESHOLD", "1.0"))  # items per second
-        self.high_error_rate_threshold: float = float(os.getenv("HIGH_ERROR_RATE_THRESHOLD", "0.1"))  # 10% error rate
-        
-        # Git Configuration
-        self.git_user_name: str = os.getenv("GIT_USER_NAME", "SonarQube AI Agent")
-        self.git_user_email: str = os.getenv("GIT_USER_EMAIL", "50246903+naveenvivek@users.noreply.github.com")
-        self.mr_target_branch: str = os.getenv("MR_TARGET_BRANCH", "main")
-        
-        # GitHub Configuration
-        self.github_token: Optional[str] = os.getenv("GITHUB_TOKEN")
-        self.github_username: str = os.getenv("GITHUB_USERNAME", "naveenvivek")
-        
-        # Validate required environment variables
-        self._validate_config()
-        
-        # Validate structured logging configuration
-        self._validate_logging_config()
-    
-    def _validate_config(self) -> None:
-        """Validate that all required environment variables are set."""
-        required_vars = [
-            ("SONAR_TOKEN", self.sonar_token),
-            ("TARGET_REPO_URL", self.target_repo_url),
-            ("TARGET_REPO_PATH", self.target_repo_path),
-            ("GITHUB_TOKEN", self.github_token)
-        ]
-        
-        missing_vars = [var_name for var_name, var_value in required_vars if not var_value]
-        
-        if missing_vars:
-            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
-    
-    def _validate_logging_config(self) -> None:
-        """Validate structured logging configuration parameters."""
-        # Validate metadata depth
-        if self.metadata_max_depth < 1 or self.metadata_max_depth > 10:
-            raise ValueError("METADATA_MAX_DEPTH must be between 1 and 10")
-        
-        # Validate metadata length
-        if self.metadata_max_length < 100 or self.metadata_max_length > 10000:
-            raise ValueError("METADATA_MAX_LENGTH must be between 100 and 10000")
-        
-        # Validate performance thresholds
-        if self.slow_operation_threshold_ms < 100:
-            raise ValueError("SLOW_OPERATION_THRESHOLD_MS must be at least 100ms")
-        
-        if self.very_slow_operation_threshold_ms <= self.slow_operation_threshold_ms:
-            raise ValueError("VERY_SLOW_OPERATION_THRESHOLD_MS must be greater than SLOW_OPERATION_THRESHOLD_MS")
-        
-        if self.low_throughput_threshold < 0:
-            raise ValueError("LOW_THROUGHPUT_THRESHOLD must be non-negative")
-        
-        if self.high_error_rate_threshold < 0 or self.high_error_rate_threshold > 1:
-            raise ValueError("HIGH_ERROR_RATE_THRESHOLD must be between 0 and 1")
-    
-    def __repr__(self) -> str:
-        """String representation of config (without sensitive data)."""
-        return (
-            f"Config("
-            f"sonar_url='{self.sonar_url}', "
-            f"sonar_project_key='{self.sonar_project_key}', "
-            f"target_repo_url='{self.target_repo_url}', "
-            f"ollama_url='{self.ollama_url}', "
-            f"ollama_model='{self.ollama_model}', "
-            f"log_file='{self.log_file}', "
-            f"structured_logging={self.structured_logging_enabled}, "
-            f"performance_logging={self.performance_logging_enabled}"
-            f")"
+        self.sonar_url = os.getenv('SONAR_URL', 'http://localhost:9000')
+        self.sonar_token = os.getenv('SONAR_TOKEN', '')
+        self.sonar_project_key = os.getenv('SONAR_PROJECT_KEY', '')
+
+        # Default filters
+        self.sonar_default_severities = self._parse_list(
+            os.getenv('SONAR_DEFAULT_SEVERITIES', 'BLOCKER,CRITICAL,MAJOR')
         )
+        self.sonar_default_types = self._parse_list(
+            os.getenv('SONAR_DEFAULT_TYPES', 'BUG,VULNERABILITY,CODE_SMELL')
+        )
+
+        # Git Configuration
+        self.git_repo_path = os.getenv('GIT_REPO_PATH', os.getcwd())
+        self.git_remote_name = os.getenv('GIT_REMOTE_NAME', 'origin')
+        self.git_default_branch = os.getenv('GIT_DEFAULT_BRANCH', 'main')
+
+        # GitLab Configuration
+        self.gitlab_url = os.getenv('GITLAB_URL')
+        self.gitlab_token = os.getenv('GITLAB_TOKEN')
+        self.gitlab_project_id = os.getenv('GITLAB_PROJECT_ID')
+
+        # Repository Configuration
+        self.target_repo_url = os.getenv(
+            'TARGET_REPO_URL', 'https://github.com/example/repo')
+
+        # AWS Bedrock Configuration
+        self.bedrock_region = os.getenv('BEDROCK_REGION', 'us-east-1')
+        self.bedrock_model_id = os.getenv(
+            'BEDROCK_MODEL_ID', 'anthropic.claude-3-haiku-20240307-v1:0')
+        self.aws_access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
+        self.aws_secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+
+        # Langfuse Configuration (if using)
+        self.langfuse_secret_key = os.getenv('LANGFUSE_SECRET_KEY')
+        self.langfuse_public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
+        self.langfuse_host = os.getenv('LANGFUSE_HOST')
+
+        # Logging Configuration
+        self.log_file = os.getenv('LOG_FILE', 'logs/sonar_ai_agent.log')
+        self.log_level = os.getenv('LOG_LEVEL', 'INFO')
+
+        # Agent Configuration
+        self.use_ai_analysis = self._parse_bool(
+            os.getenv('USE_AI_ANALYSIS', 'true'))
+        self.validate_syntax = self._parse_bool(
+            os.getenv('VALIDATE_SYNTAX', 'true'))
+        self.validate_security = self._parse_bool(
+            os.getenv('VALIDATE_SECURITY', 'true'))
+        self.backup_files = self._parse_bool(os.getenv('BACKUP_FILES', 'true'))
+
+        # Workflow Configuration
+        self.max_issues_per_run = int(os.getenv('MAX_ISSUES_PER_RUN', '50'))
+        self.batch_size = int(os.getenv('BATCH_SIZE', '10'))
+
+        # Ensure log directory exists
+        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+
+    def _parse_list(self, value: str) -> List[str]:
+        """Parse comma-separated string to list."""
+        if not value:
+            return []
+        return [item.strip() for item in value.split(',') if item.strip()]
+
+    def _parse_bool(self, value: str) -> bool:
+        """Parse string to boolean."""
+        return value.lower() in ('true', '1', 'yes', 'on')
+
+    def validate(self) -> List[str]:
+        """Validate configuration and return list of errors."""
+        errors = []
+
+        # Required SonarQube settings
+        if not self.sonar_url:
+            errors.append("SONAR_URL is required")
+        if not self.sonar_token:
+            errors.append("SONAR_TOKEN is required")
+        if not self.sonar_project_key:
+            errors.append("SONAR_PROJECT_KEY is required")
+
+        # AWS Bedrock settings (if using AI)
+        if self.use_ai_analysis:
+            if not self.aws_access_key_id:
+                errors.append("AWS_ACCESS_KEY_ID is required for AI analysis")
+            if not self.aws_secret_access_key:
+                errors.append(
+                    "AWS_SECRET_ACCESS_KEY is required for AI analysis")
+
+        return errors
+
+    def get_sonar_config(self) -> dict:
+        """Get SonarQube configuration as dictionary."""
+        return {
+            'url': self.sonar_url,
+            'token': self.sonar_token,
+            'project_key': self.sonar_project_key,
+            'default_severities': self.sonar_default_severities,
+            'default_types': self.sonar_default_types
+        }
+
+    def get_git_config(self) -> dict:
+        """Get Git configuration as dictionary."""
+        return {
+            'repo_path': self.git_repo_path,
+            'remote_name': self.git_remote_name,
+            'default_branch': self.git_default_branch,
+            'gitlab_url': self.gitlab_url,
+            'gitlab_token': self.gitlab_token,
+            'project_id': self.gitlab_project_id
+        }
+
+    def get_bedrock_config(self) -> dict:
+        """Get AWS Bedrock configuration as dictionary."""
+        return {
+            'region': self.bedrock_region,
+            'model_id': self.bedrock_model_id,
+            'access_key_id': self.aws_access_key_id,
+            'secret_access_key': self.aws_secret_access_key
+        }
+
+    def __str__(self) -> str:
+        """String representation of configuration (without sensitive data)."""
+        return f"""SonarQube AI Agent Configuration:
+  SonarQube URL: {self.sonar_url}
+  Project Key: {self.sonar_project_key}
+  Repository: {self.target_repo_url}
+  Model: {self.bedrock_model_id}
+  Log File: {self.log_file}
+  Use AI: {self.use_ai_analysis}
+  Validate Syntax: {self.validate_syntax}
+  Backup Files: {self.backup_files}
+"""

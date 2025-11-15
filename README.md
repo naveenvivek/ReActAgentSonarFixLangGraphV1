@@ -5,7 +5,7 @@ An intelligent code quality automation system that uses LangGraph workflows and 
 ## ✨ Features
 
 - 🔄 **LangGraph Workflow Orchestration** - 9-node workflow with conditional edges
-- 🤖 **AI-Powered Analysis** - Uses Ollama LLM for intelligent issue analysis
+- 🤖 **AI-Powered Analysis** - Uses AWS Bedrock LLM for intelligent issue analysis
 - 🔍 **SonarQube Integration** - Fetches and prioritizes code quality issues
 - 📊 **File-based Logging** - Complete tracking and quality metrics with log rotation
 - 🎨 **Workflow Visualization** - Interactive Mermaid diagrams
@@ -42,14 +42,14 @@ graph TD
 ### Prerequisites
 
 1. **SonarQube Server** running on `localhost:9100`
-2. **Ollama** running on `localhost:11434` with a model (e.g., `llama3.1:latest`)
+2. **AWS Bedrock** access with appropriate credentials and model access
 3. **Log directory** with write permissions for file-based logging
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/naveenvivek/ReActAgentSonarFixLangGraph.git
+git clone https://gitlab.com/naveenvivek/ReActAgentSonarFixLangGraph.git
 cd ReActAgentSonarFixLangGraph
 
 # Create virtual environment
@@ -71,13 +71,16 @@ SONAR_TOKEN=your_sonar_token_here
 SONAR_PROJECT_KEY=your_project_key
 
 # Target Repository
-TARGET_REPO_URL=https://github.com/your-username/your-repo
+TARGET_REPO_URL=https://gitlab.com/your-username/your-repo
 TARGET_REPO_PATH=/path/to/local/repo
 TARGET_REPO_BRANCH=main
 
 # AI Configuration
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1:latest
+# AWS Bedrock Configuration
+AWS_ACCESS_KEY_ID=your-aws-access-key
+AWS_SECRET_ACCESS_KEY=your-aws-secret-key
+BEDRock_MODEL_ID=amazon.nova-2-multimodal-embeddings-v1:0
+AWS_REGION=us-east-1
 
 # Logging Configuration
 LOG_LEVEL=INFO
@@ -88,6 +91,11 @@ LOG_BACKUP_COUNT=5
 # Git Configuration
 GIT_USER_NAME=Your Name
 GIT_USER_EMAIL=your.email@example.com
+
+# GitLab Configuration
+GITLAB_URL=https://gitlab.com
+GITLAB_TOKEN=glpat-your-gitlab-token-here
+GITLAB_PROJECT_ID=your-project-id
 ```
 
 ### Run the Agent
@@ -111,7 +119,7 @@ python visualize_workflow.py
 1. **🔗 Connects** to your SonarQube server
 2. **📁 Clones** your target repository locally
 3. **📊 Fetches** code quality issues (BLOCKER, CRITICAL, MAJOR)
-4. **🤖 Analyzes** each issue using Ollama LLM
+4. **🤖 Analyzes** each issue using AWS Bedrock LLM
 5. **📋 Creates** structured fix plans with confidence scores
 6. **📈 Tracks** everything in structured log files with rotation
 7. **🎨 Visualizes** the complete workflow
@@ -121,7 +129,7 @@ python visualize_workflow.py
 ```
 sonar_ai_agent/
 ├── agents/
-│   ├── base_agent.py           # Base agent with Ollama & file logging
+│   ├── base_agent.py           # Base agent with AWS Bedrock & file logging
 │   └── bug_hunter_agent.py     # Main Bug Hunter Agent
 ├── integrations/
 │   ├── sonarqube_client.py     # SonarQube API client
@@ -212,8 +220,10 @@ The system provides comprehensive tracking through structured file logging:
 - `SONAR_PROJECT_KEY` - Project to analyze
 
 ### AI Settings
-- `OLLAMA_URL` - Ollama server URL
-- `OLLAMA_MODEL` - LLM model to use
+- `AWS_ACCESS_KEY_ID` - AWS access key
+- `AWS_SECRET_ACCESS_KEY` - AWS secret key
+- `BEDROCK_MODEL_ID` - AWS Bedrock model to use
+- `AWS_REGION` - AWS region
 
 ### Repository Settings
 - `TARGET_REPO_URL` - Git repository URL
@@ -236,7 +246,7 @@ python main.py --severities BLOCKER --verbose
 2. Create a feature branch
 3. Make your changes
 4. Add tests if needed
-5. Submit a pull request
+5. Submit a merge request
 
 ## 📝 License
 
@@ -245,16 +255,16 @@ This project is licensed under the MIT License.
 ## 🙏 Acknowledgments
 
 - **LangGraph** for workflow orchestration
-- **Ollama** for local LLM inference
+- **AWS Bedrock** for cloud LLM inference
 - **File-based Logging** for observability and debugging
 - **SonarQube** for code quality analysis
 
 ## 🔗 Links
 
-- [Repository](https://github.com/naveenvivek/ReActAgentSonarFixLangGraph)
+- [Repository](https://gitlab.com/naveenvivek/ReActAgentSonarFixLangGraph)
 - [SonarQube Documentation](https://docs.sonarqube.org/)
 - [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
-- [Ollama Documentation](https://ollama.ai/docs)
+- [AWS Bedrock Documentation](https://docs.aws.amazon.com/bedrock/)
 
 
 ---

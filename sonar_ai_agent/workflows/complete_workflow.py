@@ -1,332 +1,414 @@
 """
-Complete SonarQube AI Agent Workflow - Integrates Bug Hunter and Code Healer agents.
-
-This workflow orchestrates the complete process:
-1. Bug Hunter Agent analyzes SonarQube issues and creates fix plans
-2. Code Healer Agent applies the fixes to actual code files
-3. Results are consolidated and reported
+Complete LangGraph workflow that combines Bug Hunter and Code Healer.
+Implements end-to-end SonarQube issue analysis and fix application.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, List, Any, Optional, TypedDict
+from datetime import datetime
+import json
+import time
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
+import logging
 
-from ..models import WorkflowState, SonarIssue, FixPlan, CodeFix
-from ..agents.bug_hunter_agent import BugHunterAgent
-from ..agents.code_healer_agent import CodeHealerAgent
-from ..integrations.sonarqube_client import SonarQubeClient
+from ..workflows.bug_hunter_workflow import BugHunterWorkflow
+from ..workflows.code_healer_workflow import CodeHealerWorkflow
+from ..models import SonarIssue, FixPlan, AgentMetrics
 from ..config import Config
 from ..utils.logger import get_logger
 
 
+class CompleteWorkflowState(TypedDict):
+    """State for Complete workflow (Bug Hunter + Code Healer)."""
+    # Input parameters
+    project_key: str
+    severities: List[str]
+    issue_types: List[str]
+
+    # Bug Hunter results
+    bug_hunter_results: Dict[str, Any]
+    fix_plans: List[FixPlan]
+
+    # Code Healer results
+    code_healer_results: Dict[str, Any]
+
+    # Status and metadata
+    workflow_status: str  # 'running', 'bug_hunter', 'code_healer', 'completed', 'error'
+    error_message: Optional[str]
+
+    # Session tracking
+    session_id: Optional[str]
+
+    # Results
+    results: Dict[str, Any]
+
+
 class CompleteSonarWorkflow:
-    """Complete workflow that runs both Bug Hunter and Code Healer agents."""
-    
+    """Complete LangGraph workflow combining Bug Hunter and Code Healer."""
+
     def __init__(self, config: Config):
+        """Initialize Complete workflow."""
         self.config = config
-        self.logger = get_logger(config, "sonar_ai_agent.CompleteSonarWorkflow")
-        
-        # Initialize agents
-        self.bug_hunter = BugHunterAgent(config)
-        self.code_healer = CodeHealerAgent(config)
-        self.sonar_client = SonarQubeClient(config)
-        
-        # Build workflow graph
+
+        # Initialize file-based logger
+        self.logger = get_logger(config, "sonar_ai_agent.complete_workflow")
+
+        # Initialize sub-workflows
+        self.bug_hunter_workflow = BugHunterWorkflow(config)
+        self.code_healer_workflow = CodeHealerWorkflow(config)
+
+        # Build the workflow graph
         self.workflow = self._build_workflow()
-    
+
     def _build_workflow(self) -> StateGraph:
-        """Build the LangGraph workflow."""
-        workflow = StateGraph(WorkflowState)
-        
+        """Build the LangGraph workflow with nodes and edges."""
+        workflow = StateGraph(CompleteWorkflowState)
+
         # Add nodes
-        workflow.add_node("fetch_issues", self._fetch_sonar_issues)
-        workflow.add_node("analyze_issues", self._analyze_issues_with_bug_hunter)
-        workflow.add_node("apply_fixes", self._apply_fixes_with_code_healer)
-        workflow.add_node("consolidate_results", self._consolidate_results)
-        workflow.add_node("handle_error", self._handle_error)
-        
-        # Define edges
-        workflow.set_entry_point("fetch_issues")
-        
+        workflow.add_node("initialize", self._initialize_node)
+        workflow.add_node("run_bug_hunter", self._run_bug_hunter_node)
+        workflow.add_node("validate_fix_plans", self._validate_fix_plans_node)
+        workflow.add_node("run_code_healer", self._run_code_healer_node)
+        workflow.add_node("finalize", self._finalize_node)
+        workflow.add_node("handle_error", self._handle_error_node)
+
+        # Set entry point
+        workflow.set_entry_point("initialize")
+
+        # Add edges
+        workflow.add_edge("initialize", "run_bug_hunter")
+
         workflow.add_conditional_edges(
-            "fetch_issues",
-            self._should_continue_after_fetch,
-            {
-                "continue": "analyze_issues",
-                "error": "handle_error"
-            }
+            "run_bug_hunter",
+            self._check_for_errors,
+            {"continue": "validate_fix_plans", "error": "handle_error"}
         )
-        
+
         workflow.add_conditional_edges(
-            "analyze_issues",
-            self._should_continue_after_analysis,
-            {
-                "continue": "apply_fixes",
-                "error": "handle_error"
-            }
+            "validate_fix_plans",
+            self._check_fix_plans_available,
+            {"continue": "run_code_healer",
+                "skip": "finalize", "error": "handle_error"}
         )
-        
+
         workflow.add_conditional_edges(
-            "apply_fixes",
-            self._should_continue_after_fixes,
-            {
-                "continue": "consolidate_results",
-                "error": "handle_error"
-            }
+            "run_code_healer",
+            self._check_for_errors,
+            {"continue": "finalize", "error": "handle_error"}
         )
-        
-        workflow.add_edge("consolidate_results", END)
+
+        workflow.add_edge("finalize", END)
         workflow.add_edge("handle_error", END)
-        
-        return workflow.compile(checkpointer=MemorySaver())
-    
-    def run(self, project_key: str, severities: List[str] = None) -> Dict[str, Any]:
-        """Run the complete workflow."""
-        if severities is None:
-            severities = ["BLOCKER", "CRITICAL", "MAJOR"]
-        
-        self.logger.info("Starting complete SonarQube AI workflow", 
-                        project_key=project_key,
-                        severities=severities)
-        
-        # Initialize state
-        initial_state: WorkflowState = {
-            "project_key": project_key,
-            "sonar_issues": [],
-            "current_issue_index": 0,
+
+        return workflow.compile(checkpointer=None, debug=False)
+
+    def _initialize_node(self, state: CompleteWorkflowState) -> CompleteWorkflowState:
+        """Initialize the Complete workflow."""
+        self.logger.info("🚀 Initializing Complete SonarQube workflow")
+
+        # Initialize session
+        session_id = f"complete_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        # Update state
+        state.update({
+            "bug_hunter_results": {},
             "fix_plans": [],
-            "code_fixes": [],
-            "merge_requests": [],
-            "errors": [],
+            "code_healer_results": {},
+            "workflow_status": "running",
+            "error_message": None,
+            "session_id": session_id,
+            "results": {}
+        })
+
+        self.logger.info(
+            f"✅ Complete workflow initialized with session: {session_id}")
+        return state
+
+    def _run_bug_hunter_node(self, state: CompleteWorkflowState) -> CompleteWorkflowState:
+        """Run Bug Hunter workflow for issue analysis."""
+        self.logger.info("🔍 Running Bug Hunter workflow")
+
+        try:
+            state["workflow_status"] = "bug_hunter"
+
+            # Run Bug Hunter workflow
+            bug_hunter_results = self.bug_hunter_workflow.run(
+                project_key=state["project_key"],
+                severities=state["severities"],
+                issue_types=state["issue_types"]
+            )
+
+            state["bug_hunter_results"] = bug_hunter_results
+
+            # Extract fix plans
+            if bug_hunter_results.get("status") == "success":
+                fix_plans = bug_hunter_results.get("fix_plans", [])
+                state["fix_plans"] = fix_plans
+                self.logger.info(
+                    f"✅ Bug Hunter completed: {len(fix_plans)} fix plans created")
+            else:
+                state["error_message"] = f"Bug Hunter failed: {bug_hunter_results.get('message', 'Unknown error')}"
+                state["workflow_status"] = "error"
+                self.logger.error(
+                    f"❌ Bug Hunter failed: {state['error_message']}")
+
+        except Exception as e:
+            state["error_message"] = f"Bug Hunter workflow failed: {str(e)}"
+            state["workflow_status"] = "error"
+            self.logger.error(f"❌ Bug Hunter workflow exception: {e}")
+
+        return state
+
+    def _validate_fix_plans_node(self, state: CompleteWorkflowState) -> CompleteWorkflowState:
+        """Validate fix plans before running Code Healer."""
+        fix_plans = state.get("fix_plans", [])
+        self.logger.info(f"📋 Validating {len(fix_plans)} fix plans")
+
+        if not fix_plans:
+            self.logger.warning("⚠️ No fix plans available for Code Healer")
+            state["workflow_status"] = "no_fix_plans"
+            return state
+
+        # Validate fix plans quality
+        valid_plans = []
+        for plan in fix_plans:
+            if self._is_valid_fix_plan(plan):
+                valid_plans.append(plan)
+
+        if not valid_plans:
+            self.logger.warning("⚠️ No valid fix plans found")
+            state["workflow_status"] = "no_valid_fix_plans"
+            return state
+
+        state["fix_plans"] = valid_plans
+        self.logger.info(
+            f"✅ Validated {len(valid_plans)} fix plans for Code Healer")
+        return state
+
+    def _run_code_healer_node(self, state: CompleteWorkflowState) -> CompleteWorkflowState:
+        """Run Code Healer workflow for fix application."""
+        self.logger.info("🩹 Running Code Healer workflow")
+
+        try:
+            state["workflow_status"] = "code_healer"
+
+            # Run Code Healer workflow with fix plans
+            code_healer_results = self.code_healer_workflow.run(
+                state["fix_plans"])
+
+            state["code_healer_results"] = code_healer_results
+
+            if code_healer_results.get("status") == "success":
+                fixes_applied = code_healer_results.get("fixes_applied", 0)
+                self.logger.info(
+                    f"✅ Code Healer completed: {fixes_applied} fixes applied")
+            else:
+                self.logger.warning(
+                    f"⚠️ Code Healer issues: {code_healer_results.get('message', 'Unknown issue')}")
+
+        except Exception as e:
+            state["error_message"] = f"Code Healer workflow failed: {str(e)}"
+            state["workflow_status"] = "error"
+            self.logger.error(f"❌ Code Healer workflow exception: {e}")
+
+        return state
+
+    def _finalize_node(self, state: CompleteWorkflowState) -> CompleteWorkflowState:
+        """Finalize the Complete workflow."""
+        self.logger.info("🏁 Finalizing Complete workflow")
+
+        # Collect results from both workflows
+        bug_hunter_results = state.get("bug_hunter_results", {})
+        code_healer_results = state.get("code_healer_results", {})
+
+        # Calculate overall metrics
+        total_issues = bug_hunter_results.get("total_issues", 0)
+        processed_issues = bug_hunter_results.get("processed_issues", 0)
+        fix_plans_generated = bug_hunter_results.get("total_plans", 0)
+        fixes_applied = code_healer_results.get("fixes_applied", 0)
+        successful_fixes = fixes_applied  # Assuming applied fixes are successful
+
+        # Create comprehensive results
+        results = {
+            "status": "success",
+            "message": f"Complete workflow finished: {fixes_applied} fixes applied from {fix_plans_generated} plans",
             "metadata": {
-                "severities": severities,
-                "start_time": None,
-                "end_time": None
-            }
-        }
-        
-        try:
-            # Run workflow with thread configuration
-            config = {"configurable": {"thread_id": f"complete_workflow_{project_key}"}}
-            result = self.workflow.invoke(initial_state, config=config)
-            
-            self.logger.info("Complete workflow finished", 
-                           issues_processed=len(result.get("sonar_issues", [])),
-                           fix_plans_generated=len(result.get("fix_plans", [])),
-                           fixes_applied=len(result.get("code_fixes", [])),
-                           merge_requests_created=len(result.get("merge_requests", [])),
-                           errors=len(result.get("errors", [])))
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Workflow execution failed: {str(e)}")
-            raise
-    
-    def _fetch_sonar_issues(self, state: WorkflowState) -> WorkflowState:
-        """Fetch issues from SonarQube."""
-        try:
-            self.logger.info("Fetching SonarQube issues", 
-                           project_key=state["project_key"],
-                           severities=state["metadata"]["severities"])
-            
-            # Fetch issues from SonarQube
-            issues = self.sonar_client.fetch_issues(
-                project_key=state["project_key"],
-                severities=state["metadata"]["severities"]
-            )
-            
-            self.logger.info(f"Fetched {len(issues)} issues from SonarQube")
-            
-            state["sonar_issues"] = issues
-            state["metadata"]["issues_fetched"] = len(issues)
-            
-            return state
-            
-        except Exception as e:
-            error_msg = f"Failed to fetch SonarQube issues: {str(e)}"
-            self.logger.error(error_msg)
-            state["errors"].append(error_msg)
-            return state
-    
-    def _analyze_issues_with_bug_hunter(self, state: WorkflowState) -> WorkflowState:
-        """Analyze issues using Bug Hunter Agent."""
-        try:
-            self.logger.info("Starting Bug Hunter analysis", 
-                           issues_count=len(state["sonar_issues"]))
-            
-            # Run Bug Hunter Agent with project key and severities
-            bug_hunter_results = self.bug_hunter.process(
-                project_key=state["project_key"],
-                severities=state["metadata"]["severities"]
-            )
-            
-            # Extract fix plans from results
-            fix_plans = bug_hunter_results.get("fix_plans", [])
-            
-            self.logger.info(f"Bug Hunter generated {len(fix_plans)} fix plans")
-            
-            state["fix_plans"] = fix_plans
-            state["metadata"]["bug_hunter_results"] = bug_hunter_results
-            
-            return state
-            
-        except Exception as e:
-            error_msg = f"Bug Hunter analysis failed: {str(e)}"
-            self.logger.error(error_msg)
-            state["errors"].append(error_msg)
-            return state
-    
-    def _apply_fixes_with_code_healer(self, state: WorkflowState) -> WorkflowState:
-        """Apply fixes using Code Healer Agent."""
-        try:
-            self.logger.info("Starting Code Healer fix application", 
-                           fix_plans_count=len(state["fix_plans"]))
-            
-            # Run Code Healer Agent
-            code_healer_results = self.code_healer.process(state["fix_plans"])
-            
-            # Extract applied fixes and merge requests
-            applied_fixes = code_healer_results.get("applied_fixes", [])
-            merge_requests = code_healer_results.get("merge_requests", [])
-            
-            self.logger.info(f"Code Healer applied {len(applied_fixes)} fixes and created {len(merge_requests)} merge requests")
-            
-            state["code_fixes"] = applied_fixes
-            state["merge_requests"] = merge_requests
-            state["metadata"]["code_healer_results"] = code_healer_results
-            
-            return state
-            
-        except Exception as e:
-            error_msg = f"Code Healer fix application failed: {str(e)}"
-            self.logger.error(error_msg)
-            state["errors"].append(error_msg)
-            return state
-    
-    def _consolidate_results(self, state: WorkflowState) -> WorkflowState:
-        """Consolidate and finalize results."""
-        try:
-            self.logger.info("Consolidating workflow results")
-            
-            # Calculate summary statistics
-            total_issues = len(state["sonar_issues"])
-            fix_plans_generated = len(state["fix_plans"])
-            fixes_applied = len(state["code_fixes"])
-            successful_fixes = len([f for f in state["code_fixes"] if f.is_valid])
-            merge_requests_created = len(state["merge_requests"])
-            
-            # Calculate success rates
-            analysis_success_rate = fix_plans_generated / total_issues if total_issues > 0 else 0.0
-            fix_success_rate = successful_fixes / fix_plans_generated if fix_plans_generated > 0 else 0.0
-            overall_success_rate = successful_fixes / total_issues if total_issues > 0 else 0.0
-            
-            # Update metadata with final results
-            state["metadata"].update({
+                "workflow_status": "completed",
                 "total_issues": total_issues,
+                "processed_issues": processed_issues,
                 "fix_plans_generated": fix_plans_generated,
                 "fixes_applied": fixes_applied,
                 "successful_fixes": successful_fixes,
-                "merge_requests_created": merge_requests_created,
-                "analysis_success_rate": analysis_success_rate,
-                "fix_success_rate": fix_success_rate,
-                "overall_success_rate": overall_success_rate,
-                "workflow_status": "completed"
-            })
-            
-            self.logger.info("Workflow results consolidated", 
-                           total_issues=total_issues,
-                           fix_plans_generated=fix_plans_generated,
-                           fixes_applied=fixes_applied,
-                           successful_fixes=successful_fixes,
-                           merge_requests_created=merge_requests_created,
-                           overall_success_rate=overall_success_rate)
-            
-            return state
-            
-        except Exception as e:
-            error_msg = f"Failed to consolidate results: {str(e)}"
-            self.logger.error(error_msg)
-            state["errors"].append(error_msg)
-            return state
-    
-    def _handle_error(self, state: WorkflowState) -> WorkflowState:
-        """Handle workflow errors."""
-        self.logger.error("Workflow encountered errors", 
-                         errors=state["errors"],
-                         issues_processed=len(state["sonar_issues"]),
-                         fix_plans_generated=len(state["fix_plans"]),
-                         fixes_applied=len(state["code_fixes"]))
-        
-        state["metadata"]["workflow_status"] = "failed"
-        return state
-    
-    def _should_continue_after_fetch(self, state: WorkflowState) -> str:
-        """Decide whether to continue after fetching issues."""
-        if state["errors"]:
-            return "error"
-        
-        if not state["sonar_issues"]:
-            self.logger.warning("No issues found to process")
-            state["errors"].append("No SonarQube issues found for the specified criteria")
-            return "error"
-        
-        return "continue"
-    
-    def _should_continue_after_analysis(self, state: WorkflowState) -> str:
-        """Decide whether to continue after Bug Hunter analysis."""
-        if state["errors"]:
-            return "error"
-        
-        if not state["fix_plans"]:
-            self.logger.warning("No fix plans generated by Bug Hunter")
-            state["errors"].append("Bug Hunter Agent did not generate any fix plans")
-            return "error"
-        
-        return "continue"
-    
-    def _should_continue_after_fixes(self, state: WorkflowState) -> str:
-        """Decide whether to continue after Code Healer fixes."""
-        if state["errors"]:
-            return "error"
-        
-        # Continue even if no fixes were applied (for reporting)
-        return "continue"
-    
-    def health_check(self) -> Dict[str, bool]:
-        """Check health of all workflow components."""
-        health_status = {
-            "sonar_client": False,
-            "bug_hunter_agent": False,
-            "code_healer_agent": False,
-            "overall": False
+                "failed_fixes": code_healer_results.get("fixes_failed", 0),
+                "merge_requests_created": 1 if code_healer_results.get("merge_request_url") else 0,
+                "overall_success_rate": (successful_fixes / fix_plans_generated) if fix_plans_generated > 0 else 0.0,
+                "bug_hunter_processing_time": bug_hunter_results.get("processing_time", 0),
+                "code_healer_processing_time": code_healer_results.get("processing_time", 0),
+                "session_id": state.get("session_id")
+            },
+            "bug_hunter_results": bug_hunter_results,
+            "code_healer_results": code_healer_results,
+            "timestamp": datetime.now().isoformat()
         }
-        
+
+        # Add merge requests info
+        merge_requests = []
+        mr_url = code_healer_results.get("merge_request_url")
+        if mr_url:
+            merge_requests.append(mr_url)
+        results["merge_requests"] = merge_requests
+
+        # Add errors if any
+        errors = []
+        if state.get("error_message"):
+            errors.append(state["error_message"])
+        if bug_hunter_results.get("status") == "error":
+            errors.append(f"Bug Hunter: {bug_hunter_results.get('message')}")
+        if code_healer_results.get("status") == "error":
+            errors.append(f"Code Healer: {code_healer_results.get('message')}")
+        results["errors"] = errors
+
+        state["results"] = results
+        state["workflow_status"] = "completed"
+
+        # Final workflow summary
+        self.logger.info("Complete workflow finished",
+                         total_issues=total_issues,
+                         fix_plans_generated=fix_plans_generated,
+                         fixes_applied=fixes_applied,
+                         merge_requests_created=len(merge_requests),
+                         session_id=state.get("session_id"))
+
+        self.logger.info(
+            f"✅ Complete workflow finished: {fixes_applied} fixes applied")
+        return state
+
+    def _handle_error_node(self, state: CompleteWorkflowState) -> CompleteWorkflowState:
+        """Handle workflow errors."""
+        error_msg = state.get("error_message", "Unknown error")
+        self.logger.error(f"❌ Complete workflow error: {error_msg}")
+
+        # Create error results
+        state["results"] = {
+            "status": "error",
+            "message": error_msg,
+            "metadata": {
+                "workflow_status": "error",
+                "total_issues": 0,
+                "fix_plans_generated": 0,
+                "fixes_applied": 0,
+                "session_id": state.get("session_id")
+            },
+            "bug_hunter_results": state.get("bug_hunter_results", {}),
+            "code_healer_results": state.get("code_healer_results", {}),
+            "timestamp": datetime.now().isoformat()
+        }
+
+        return state
+
+    def _check_for_errors(self, state: CompleteWorkflowState) -> str:
+        """Check if there are errors in the current state."""
+        if state["workflow_status"] == "error":
+            return "error"
+        return "continue"
+
+    def _check_fix_plans_available(self, state: CompleteWorkflowState) -> str:
+        """Check if fix plans are available for Code Healer."""
+        if state["workflow_status"] == "error":
+            return "error"
+
+        workflow_status = state.get("workflow_status")
+        if workflow_status in ["no_fix_plans", "no_valid_fix_plans"]:
+            return "skip"
+
+        return "continue"
+
+    def _is_valid_fix_plan(self, fix_plan: FixPlan) -> bool:
+        """Validate individual fix plan."""
+        return (
+            fix_plan.issue_key and
+            fix_plan.file_path and
+            fix_plan.proposed_solution and
+            fix_plan.confidence_score > 0.5
+        )
+
+    def run(self, project_key: str, severities: List[str], issue_types: List[str] = None) -> Dict[str, Any]:
+        """Run the Complete workflow."""
+        self.logger.info("🚀 Starting Complete SonarQube LangGraph workflow")
+
+        # Use default issue types if not provided
+        if issue_types is None:
+            issue_types = ["BUG", "VULNERABILITY", "CODE_SMELL"]
+
+        # Initialize state
+        initial_state = CompleteWorkflowState(
+            project_key=project_key,
+            severities=severities,
+            issue_types=issue_types,
+            bug_hunter_results={},
+            fix_plans=[],
+            code_healer_results={},
+            workflow_status="initialized",
+            error_message=None,
+            session_id=None,
+            results={}
+        )
+
         try:
-            # Check SonarQube client
-            health_status["sonar_client"] = self.sonar_client.health_check()
-            
-            # Check Bug Hunter Agent
-            health_status["bug_hunter_agent"] = self.bug_hunter.health_check()
-            
-            # Check Code Healer Agent
-            health_status["code_healer_agent"] = self.code_healer.health_check()
-            
-            # Overall health
-            health_status["overall"] = all([
-                health_status["sonar_client"],
-                health_status["bug_hunter_agent"],
-                health_status["code_healer_agent"]
-            ])
-            
-            self.logger.info("Workflow health check completed", **health_status)
-            
+            # Run the workflow
+            config = {"recursion_limit": 50}
+            final_state = self.workflow.invoke(initial_state, config=config)
+
+            self.logger.info("✅ Complete workflow finished")
+            return final_state["results"]
+
         except Exception as e:
-            self.logger.error(f"Health check failed: {str(e)}")
-        
-        return health_status
+            self.logger.error(f"❌ Complete workflow execution failed: {e}")
+            return {
+                "status": "error",
+                "message": f"Complete workflow execution failed: {str(e)}",
+                "metadata": {
+                    "workflow_status": "error",
+                    "total_issues": 0,
+                    "fix_plans_generated": 0,
+                    "fixes_applied": 0
+                },
+                "timestamp": datetime.now().isoformat()
+            }
 
+    def visualize_workflow(self) -> str:
+        """Get a visual representation of the workflow."""
+        return "Complete Workflow: Initialize -> Bug Hunter (Analysis) -> Validate Fix Plans -> Code Healer (Apply Fixes) -> Finalize"
 
-def create_complete_workflow(config: Config) -> CompleteSonarWorkflow:
-    """Factory function to create the complete workflow."""
-    return CompleteSonarWorkflow(config)
+    def get_mermaid_diagram(self) -> str:
+        """Generate Mermaid diagram representation of the workflow."""
+        return """
+graph TD
+    A[Initialize] --> B[Run Bug Hunter]
+    B --> C[Validate Fix Plans]
+    C --> D[Run Code Healer]
+    D --> E[Finalize]
+    
+    B --> F[Handle Error]
+    C --> F
+    D --> F
+    C --> E
+    
+    E --> G[END]
+    F --> G
+    
+    style A fill:#e1f5fe
+    style B fill:#fff3e0
+    style C fill:#e8f5e8
+    style D fill:#f3e5f5
+    style E fill:#c8e6c9
+    style F fill:#ffcdd2
+    style G fill:#f3e5f5
+"""
+
+    def draw_workflow_png(self) -> Optional[bytes]:
+        """Generate PNG image of the workflow graph."""
+        try:
+            return self.workflow.get_graph().draw_mermaid_png()
+        except Exception as e:
+            self.logger.warning(f"Could not generate PNG: {e}")
+            return None

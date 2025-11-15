@@ -1,0 +1,74 @@
+[
+  {
+    "issue_key": "02e0dd79-62c1-4693-ab11-e251def76c21",
+    "file_path": "src/main/java/com/example/springbootapp/controller/AdminController.java",
+    "line_number": 102,
+    "issue_description": "Define a constant instead of duplicating this literal \"admin\" 3 times.",
+    "problem_analysis": "AI Analysis of CODE_SMELL issue in src/main/java/com/example/springbootapp/controller/AdminController.java",
+    "proposed_solution": "Recommended fix for rule java:S1192",
+    "confidence_score": 0.6,
+    "estimated_effort": "Medium",
+    "potential_side_effects": [
+      "Review recommended before applying"
+    ],
+    "fix_type": "replace",
+    "severity": "CRITICAL",
+    "created_at": "2025-11-15T18:01:24.819377",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T18:01:24.882729"
+  },
+  {
+    "issue_key": "64003ff5-6833-4f60-a7ac-bab2d60e704a",
+    "file_path": "src/main/java/com/example/springbootapp/dao/UserDao.java",
+    "line_number": 125,
+    "issue_description": "Refactor this method to reduce its Cognitive Complexity from 21 to the 15 allowed.",
+    "problem_analysis": "AI Analysis of CODE_SMELL issue in src/main/java/com/example/springbootapp/dao/UserDao.java",
+    "proposed_solution": "Recommended fix for rule java:S3776",
+    "confidence_score": 0.6,
+    "estimated_effort": "Medium",
+    "potential_side_effects": [
+      "Review recommended before applying"
+    ],
+    "fix_type": "replace",
+    "severity": "CRITICAL",
+    "created_at": "2025-11-15T18:01:24.845123",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T18:01:24.904238"
+  },
+  {
+    "issue_key": "be60abd3-e019-4928-9700-36921b9ed93c",
+    "file_path": "src/main/java/com/example/springbootapp/util/SecurityUtils.java",
+    "line_number": 27,
+    "issue_description": "Refactor this method to reduce its Cognitive Complexity from 38 to the 15 allowed.",
+    "problem_analysis": "AI Analysis of CODE_SMELL issue in src/main/java/com/example/springbootapp/util/SecurityUtils.java",
+    "proposed_solution": "Recommended fix for rule java:S3776",
+    "confidence_score": 0.6,
+    "estimated_effort": "Medium",
+    "potential_side_effects": [
+      "Review recommended before applying"
+    ],
+    "fix_type": "replace",
+    "severity": "CRITICAL",
+    "created_at": "2025-11-15T18:01:24.859768",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T18:01:24.919197"
+  },
+  {
+    "issue_key": "72fc37bb-a94e-4995-bfb2-df0aaff14bb2",
+    "file_path": "src/main/java/com/example/springbootapp/util/SecurityUtils.java",
+    "line_number": 106,
+    "issue_description": "Save and re-use this \"Random\".",
+    "problem_analysis": "AI Analysis of BUG issue in src/main/java/com/example/springbootapp/util/SecurityUtils.java",
+    "proposed_solution": "Recommended fix for rule java:S2119",
+    "confidence_score": 0.6,
+    "estimated_effort": "Medium",
+    "potential_side_effects": [
+      "Review recommended before applying"
+    ],
+    "fix_type": "replace",
+    "severity": "CRITICAL",
+    "created_at": "2025-11-15T18:01:24.868596",
+    "project_key": "naveenvivek_SpringBootAppSonarAI",
+    "stored_at": "2025-11-15T18:01:24.929757"
+  }
+]

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Workflow visualization script for SonarQube AI Agent.
-Displays the LangGraph workflow as a visual diagram.
+Bug Hunter Workflow visualization script for SonarQube AI Agent.
+Displays the LangGraph Bug Hunter workflow as a visual diagram.
 """
 
+from sonar_ai_agent.workflows.bug_hunter_workflow import BugHunterWorkflow
+from sonar_ai_agent.config import Config
 import sys
 from pathlib import Path
 
@@ -11,31 +13,29 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from sonar_ai_agent.config import Config
-from sonar_ai_agent.workflows.bug_hunter_workflow import BugHunterWorkflow
 
-def display_workflow_diagram():
-    """Display the workflow diagram using different methods."""
-    print("🎨 SonarQube AI Agent - Workflow Visualization")
-    print("=" * 60)
-    
+def display_bughunter_workflow_diagram():
+    """Display the Bug Hunter workflow diagram using different methods."""
+    print("🔍 SonarQube AI Agent - Bug Hunter Workflow Visualization")
+    print("=" * 70)
+
     try:
         # Initialize workflow
         config = Config()
         workflow = BugHunterWorkflow(config)
-        
+
         print("✅ Workflow initialized")
-        
+
         # Method 1: Try to generate PNG using LangGraph
         print("\n🖼️ Attempting to generate PNG diagram...")
         try:
             png_data = workflow.draw_workflow_png()
             if png_data:
                 # Save PNG file
-                with open("bug_hunter_workflow.png", "wb") as f:
+                with open("bughunter_workflow.png", "wb") as f:
                     f.write(png_data)
-                print("✅ PNG diagram saved as 'bug_hunter_workflow.png'")
-                
+                print("✅ PNG diagram saved as 'bughunter_workflow.png'")
+
                 # Try to display if in Jupyter/IPython
                 try:
                     from IPython.display import Image, display
@@ -43,36 +43,36 @@ def display_workflow_diagram():
                     print("✅ Diagram displayed inline")
                 except ImportError:
                     print("ℹ️ Install IPython to display inline: pip install ipython")
-                    print("📁 Open 'bug_hunter_workflow.png' to view the diagram")
+                    print("📁 Open 'bughunter_workflow.png' to view the diagram")
             else:
                 print("⚠️ Could not generate PNG diagram")
         except Exception as e:
             print(f"⚠️ PNG generation failed: {e}")
-        
+
         # Method 2: Generate Mermaid text
         print("\n📝 Generating Mermaid diagram...")
         try:
             mermaid_text = workflow.get_mermaid_diagram()
-            
+
             # Save Mermaid file
-            with open("bug_hunter_workflow.mmd", "w") as f:
+            with open("bughunter_workflow.mmd", "w") as f:
                 f.write(mermaid_text)
-            print("✅ Mermaid diagram saved as 'bug_hunter_workflow.mmd'")
-            
+            print("✅ Mermaid diagram saved as 'bughunter_workflow.mmd'")
+
             # Display Mermaid text
             print("\n🔍 Mermaid Diagram Code:")
             print("-" * 40)
             print(mermaid_text)
-            
+
         except Exception as e:
             print(f"❌ Mermaid generation failed: {e}")
-        
+
         # Method 3: Text visualization
         print("\n📊 Text Visualization:")
         print("-" * 40)
         text_viz = workflow.visualize_workflow()
         print(text_viz)
-        
+
         print("\n🎯 Workflow Nodes Details:")
         print("-" * 40)
         nodes = [
@@ -80,16 +80,16 @@ def display_workflow_diagram():
             "2. Prepare Repository - Clone/update SpringBootAppSonarAI",
             "3. Connect SonarQube - Validate connection to localhost:9100",
             "4. Fetch Issues - Get BLOCKER/CRITICAL/MAJOR issues",
-            "5. Analyze Issue - Use Ollama LLM for analysis",
+            "5. Analyze Issue - Use AWS Bedrock LLM for analysis",
             "6. Create Fix Plan - Generate structured fix plan",
             "7. Update Langfuse - Track metrics and scores",
             "8. Finalize - Complete workflow and return results",
             "9. Handle Error - Error recovery and logging"
         ]
-        
+
         for node in nodes:
             print(f"   {node}")
-        
+
         print("\n🔗 Conditional Edges:")
         print("-" * 40)
         edges = [
@@ -99,24 +99,25 @@ def display_workflow_diagram():
             "• Repository Failed? → Error handler",
             "• SonarQube Failed? → Error handler"
         ]
-        
+
         for edge in edges:
             print(f"   {edge}")
-        
-        print("\n💡 How to View Diagrams:")
+
+        print("💡 How to View Diagrams:")
         print("-" * 40)
-        print("📁 PNG: Open 'bug_hunter_workflow.png' in image viewer")
-        print("🌐 Mermaid: Copy 'bug_hunter_workflow.mmd' to https://mermaid.live")
+        print("📁 PNG: Open 'bughunter_workflow.png' in image viewer")
+        print("🌐 Mermaid: Copy 'bughunter_workflow.mmd' to https://mermaid.live")
         print("🔧 Online: Paste Mermaid code in Mermaid Live Editor")
-        
+
     except Exception as e:
         print(f"❌ Visualization failed: {e}")
         return False
-    
+
     return True
 
-def create_jupyter_notebook():
-    """Create a Jupyter notebook for interactive visualization."""
+
+def create_bughunter_jupyter_notebook():
+    """Create a Jupyter notebook for interactive Bug Hunter visualization."""
     notebook_content = '''
 {
  "cells": [
@@ -210,33 +211,34 @@ def create_jupyter_notebook():
  "nbformat_minor": 4
 }
 '''
-    
+
     try:
-        with open("workflow_visualization.ipynb", "w", encoding='utf-8') as f:
+        with open("bughunter_workflow_visualization.ipynb", "w", encoding='utf-8') as f:
             f.write(notebook_content)
-        print("✅ Jupyter notebook created: 'workflow_visualization.ipynb'")
-        print("💡 Run: jupyter notebook workflow_visualization.ipynb")
+        print("✅ Jupyter notebook created: 'bughunter_workflow_visualization.ipynb'")
+        print("💡 Run: jupyter notebook bughunter_workflow_visualization.ipynb")
         return True
     except Exception as e:
         print(f"❌ Failed to create notebook: {e}")
         return False
 
+
 if __name__ == "__main__":
-    print("🎨 SonarQube AI Agent - Workflow Visualization Tool")
-    print("This script generates visual diagrams of the LangGraph workflow.\\n")
-    
+    print("🔍 SonarQube AI Agent - Bug Hunter Workflow Visualization Tool")
+    print("This script generates visual diagrams of the Bug Hunter LangGraph workflow.\\n")
+
     # Generate visualizations
-    success = display_workflow_diagram()
-    
+    success = display_bughunter_workflow_diagram()
+
     if success:
         print("\\n📓 Creating Jupyter notebook for interactive visualization...")
-        create_jupyter_notebook()
-        
+        create_bughunter_jupyter_notebook()
+
         print("\\n🎉 Visualization complete!")
         print("\\n📋 Files created:")
-        print("   • bug_hunter_workflow.png - PNG diagram")
-        print("   • bug_hunter_workflow.mmd - Mermaid source")
-        print("   • workflow_visualization.ipynb - Jupyter notebook")
+        print("   • bughunter_workflow.png - PNG diagram")
+        print("   • bughunter_workflow.mmd - Mermaid source")
+        print("   • bughunter_workflow_visualization.ipynb - Jupyter notebook")
     else:
         print("\\n💡 To fix visualization issues:")
         print("1. Ensure all dependencies are installed")

@@ -1,481 +1,424 @@
 """
 LangGraph workflow for Bug Hunter Agent.
-Implements nodes and edges for SonarQube issue analysis with Langfuse tracking.
+Implements nodes and edges for SonarQube issue analysis and fix plan generation.
 """
 
 from typing import Dict, List, Any, Optional, TypedDict
 from datetime import datetime
 import json
+import time
 from langgraph.graph import StateGraph, END
 import logging
 
 from ..agents.bug_hunter_agent import BugHunterAgent
-from ..models import SonarIssue, FixPlan
+from ..models import SonarIssue, FixPlan, AgentMetrics
 from ..config import Config
 from ..utils.logger import get_logger
+from ..utils.fixplan_storage import FixPlanStorage
+from ..integrations.sonarqube_client import SonarQubeClient
 
 
 class BugHunterWorkflowState(TypedDict):
     """State for Bug Hunter workflow."""
     # Input parameters
-    project_key: Optional[str]
-    severities: Optional[List[str]]
-    issue_types: Optional[List[str]]
-    
+    project_key: str
+    severities: List[str]
+    issue_types: List[str]
+
     # Workflow data
-    sonar_issues: List[SonarIssue]
+    issues: List[SonarIssue]
     fix_plans: List[FixPlan]
+
+    # Processing state
     current_issue_index: int
-    
+    total_issues: int
+    processed_issues: List[SonarIssue]
+    failed_issues: List[Dict[str, Any]]
+
     # Status and metadata
     workflow_status: str  # 'running', 'completed', 'error'
     error_message: Optional[str]
-    processed_issues: int
-    total_issues: int
-    
+
     # Session tracking
     session_id: Optional[str]
-    
+
     # Results
     results: Dict[str, Any]
 
 
 class BugHunterWorkflow:
-    """LangGraph workflow for Bug Hunter Agent with file-based logging."""
-    
+    """LangGraph workflow for Bug Hunter Agent."""
+
     def __init__(self, config: Config):
         """Initialize Bug Hunter workflow."""
         self.config = config
         self.agent = BugHunterAgent(config)
-        
+
         # Initialize file-based logger
-        self.logger = get_logger(config, "sonar_ai_agent.workflow")
-        
+        self.logger = get_logger(config, "sonar_ai_agent.bug_hunter_workflow")
+
+        # Initialize SonarQube client and fix plan storage
+        self.sonar_client = SonarQubeClient(config)
+        self.fix_plan_storage = FixPlanStorage()
+
         # Build the workflow graph
         self.workflow = self._build_workflow()
-    
+
     def _build_workflow(self) -> StateGraph:
         """Build the LangGraph workflow with nodes and edges."""
         workflow = StateGraph(BugHunterWorkflowState)
-        
+
         # Add nodes
         workflow.add_node("initialize", self._initialize_node)
-        workflow.add_node("prepare_repository", self._prepare_repository_node)
-        workflow.add_node("connect_sonarqube", self._connect_sonarqube_node)
         workflow.add_node("fetch_issues", self._fetch_issues_node)
-        workflow.add_node("process_issues", self._process_issues_node)
+        workflow.add_node("analyze_issues", self._analyze_issues_node)
+        workflow.add_node("create_fix_plans", self._create_fix_plans_node)
+        workflow.add_node("save_fix_plans", self._save_fix_plans_node)
         workflow.add_node("finalize", self._finalize_node)
         workflow.add_node("handle_error", self._handle_error_node)
-        
+
         # Set entry point
         workflow.set_entry_point("initialize")
-        
+
         # Add edges
-        workflow.add_edge("initialize", "prepare_repository")
-        
-        # Error handling edges with conditional routing
-        workflow.add_conditional_edges(
-            "prepare_repository",
-            self._check_for_errors,
-            {"continue": "connect_sonarqube", "error": "handle_error"}
-        )
-        
-        workflow.add_conditional_edges(
-            "connect_sonarqube", 
-            self._check_for_errors,
-            {"continue": "fetch_issues", "error": "handle_error"}
-        )
-        
+        workflow.add_edge("initialize", "fetch_issues")
+
         workflow.add_conditional_edges(
             "fetch_issues",
-            self._check_issues_available,
-            {"process": "process_issues", "finalize": "finalize", "error": "handle_error"}
+            self._check_for_errors,
+            {"continue": "analyze_issues", "error": "handle_error"}
         )
-        
-        # Process issues and finalize
-        workflow.add_edge("process_issues", "finalize")
-        
-        # End points
+
+        workflow.add_conditional_edges(
+            "analyze_issues",
+            self._check_for_errors,
+            {"continue": "create_fix_plans", "error": "handle_error"}
+        )
+
+        workflow.add_conditional_edges(
+            "create_fix_plans",
+            self._check_for_errors,
+            {"continue": "save_fix_plans", "error": "handle_error"}
+        )
+
+        workflow.add_edge("save_fix_plans", "finalize")
         workflow.add_edge("finalize", END)
         workflow.add_edge("handle_error", END)
-        
-        # Compile with recursion limit
+
         return workflow.compile(checkpointer=None, debug=False)
-    
 
     def _initialize_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Initialize the workflow and start Langfuse tracking."""
-        self.logger.info("🚀 Initializing Bug Hunter workflow")
-        
+        """Initialize the Bug Hunter workflow."""
+        self.logger.info("🔍 Initializing Bug Hunter workflow")
+
         # Start metrics tracking
         self.agent.start_metrics_tracking()
-        
+
         # Initialize session
         session_id = f"bug_hunter_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
+
         # Update state
         state.update({
+            "issues": [],
+            "fix_plans": [],
+            "current_issue_index": 0,
+            "total_issues": 0,
+            "processed_issues": [],
+            "failed_issues": [],
             "workflow_status": "running",
             "error_message": None,
-            "processed_issues": 0,
-            "total_issues": 0,
-            "current_issue_index": 0,
-            "sonar_issues": [],
-            "fix_plans": [],
             "session_id": session_id,
             "results": {}
         })
-        
-        self.logger.info(f"✅ Workflow initialized with session: {session_id}")
-        return state
-    
 
-    def _prepare_repository_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Prepare the target repository."""
-        self.logger.info("📁 Preparing target repository")
-        
-        try:
-            success = self.agent._prepare_repository()
-            if not success:
-                state["error_message"] = "Failed to prepare repository"
-                state["workflow_status"] = "error"
-            else:
-                self.logger.info("✅ Repository prepared successfully")
-                
-                # Log workflow step
-                self.logger.info("Repository preparation completed", 
-                               repository_url=self.config.target_repo_url,
-                               session_id=state.get("session_id"))
-                
-        except Exception as e:
-            state["error_message"] = f"Repository preparation failed: {str(e)}"
-            state["workflow_status"] = "error"
-            self.logger.error(f"❌ Repository preparation failed: {e}")
-        
+        self.logger.info(
+            f"✅ Bug Hunter workflow initialized with session: {session_id}")
         return state
-    
-
-    def _connect_sonarqube_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Connect to SonarQube and validate project."""
-        self.logger.info("🔗 Connecting to SonarQube")
-        
-        try:
-            success = self.agent._validate_sonar_connection()
-            if not success:
-                state["error_message"] = "Failed to connect to SonarQube"
-                state["workflow_status"] = "error"
-            else:
-                self.logger.info("✅ SonarQube connection validated")
-                
-                # Log workflow step
-                self.logger.info("SonarQube connection established", 
-                               sonar_url=self.config.sonar_url,
-                               project_key=self.config.sonar_project_key,
-                               session_id=state.get("session_id"))
-                
-        except Exception as e:
-            state["error_message"] = f"SonarQube connection failed: {str(e)}"
-            state["workflow_status"] = "error"
-            self.logger.error(f"❌ SonarQube connection failed: {e}")
-        
-        return state
-    
 
     def _fetch_issues_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Fetch issues from SonarQube."""
-        self.logger.info("📊 Fetching issues from SonarQube")
-        
+        """Fetch SonarQube issues."""
+        self.logger.info("📋 Fetching SonarQube issues")
+
         try:
-            issues = self.agent._fetch_sonar_issues(
-                project_key=state.get("project_key"),
-                severities=state.get("severities"),
-                issue_types=state.get("issue_types")
+            # Fetch issues from SonarQube
+            issues = self.sonar_client.get_issues(
+                project_key=state["project_key"],
+                severities=state["severities"],
+                types=state["issue_types"]
             )
-            
+
             if not issues:
-                self.logger.info("ℹ️ No issues found to process")
-                state["workflow_status"] = "completed"
-                state["results"] = {"message": "No issues found", "fix_plans": []}
+                self.logger.warning("⚠️ No issues found in SonarQube")
+                state["issues"] = []
+                state["total_issues"] = 0
             else:
-                # Prioritize issues
-                prioritized_issues = self.agent._prioritize_issues(issues)
-                
-                state["sonar_issues"] = prioritized_issues
-                state["total_issues"] = len(prioritized_issues)
-                state["current_issue_index"] = 0
-                
-                self.logger.info(f"✅ Fetched and prioritized {len(prioritized_issues)} issues")
-                
-                # Log workflow step
-                self.logger.info("Issues fetched and prioritized", 
-                               total_issues=len(prioritized_issues),
-                               severities=[issue.severity for issue in prioritized_issues[:5]],
-                               types=[issue.type for issue in prioritized_issues[:5]],
-                               session_id=state.get("session_id"))
-                
+                state["issues"] = issues
+                state["total_issues"] = len(issues)
+                self.logger.info(
+                    f"📊 Fetched {len(issues)} issues from SonarQube")
+
         except Exception as e:
             state["error_message"] = f"Failed to fetch issues: {str(e)}"
             state["workflow_status"] = "error"
             self.logger.error(f"❌ Failed to fetch issues: {e}")
-        
-        return state
-    
 
-    def _process_issues_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Process all issues in batch to avoid recursion."""
-        issues = state["sonar_issues"]
-        max_issues = min(len(issues), self.agent.max_issues_per_run)
-        
-        self.logger.info(f"🔄 Processing {max_issues} issues in batch")
-        
-        for i in range(max_issues):
-            current_issue = issues[i]
-            self.logger.info(f"🔍 Analyzing issue {i + 1}/{max_issues}: {current_issue.key}")
-            
+        return state
+
+    def _analyze_issues_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
+        """Analyze SonarQube issues using Bug Hunter agent."""
+        issues = state["issues"]
+        self.logger.info(f"🔍 Analyzing {len(issues)} issues")
+
+        processed_issues = []
+        failed_issues = []
+
+        for i, issue in enumerate(issues):
             try:
-                # Get code context
-                code_context = self.agent._get_code_context(current_issue)
-                if not code_context:
-                    self.logger.warning(f"⚠️ Could not get code context for issue {current_issue.key}")
-                    continue
-                
-                # Analyze with LLM
-                analysis = self.agent._analyze_issue_with_llm(current_issue, code_context)
-                if not analysis:
-                    self.logger.warning(f"⚠️ LLM analysis failed for issue {current_issue.key}")
-                    continue
-                
-                # Create fix plan
-                fix_plan = self.agent._create_fix_plan(current_issue, code_context, analysis)
-                if fix_plan:
-                    state["fix_plans"].append(fix_plan)
-                    state["processed_issues"] += 1
-                    
-                    self.logger.info(f"✅ Fix plan created for {current_issue.key} (confidence: {fix_plan.confidence_score:.2f})")
-                    
-                    # Log issue analysis
-                    self.logger.info("Issue analysis completed", 
-                                   issue_key=fix_plan.issue_key,
-                                   confidence_score=fix_plan.confidence_score,
-                                   estimated_effort=fix_plan.estimated_effort,
-                                   file_path=fix_plan.file_path,
-                                   session_id=state.get("session_id"))
-                else:
-                    self.logger.warning(f"⚠️ Failed to create fix plan for {current_issue.key}")
-                
-            except Exception as e:
-                self.logger.error(f"❌ Failed to process issue {current_issue.key}: {e}")
-                continue
-        
-        self.logger.info(f"✅ Batch processing completed: {state['processed_issues']} fix plans created")
-        return state
-    
+                self.logger.info(
+                    f"⚡ Analyzing issue {i+1}/{len(issues)}: {issue.key}")
 
-    
+                # Analyze individual issue
+                analysis_result = self.agent.analyze_issue(issue)
+
+                if analysis_result["success"]:
+                    processed_issues.append(issue)
+                    self.logger.info(
+                        f"✅ Successfully analyzed issue: {issue.key}")
+                else:
+                    failed_issues.append({
+                        "issue": issue,
+                        "error": analysis_result.get("error", "Unknown error")
+                    })
+                    self.logger.warning(
+                        f"⚠️ Failed to analyze issue: {issue.key}")
+
+                # Update current index
+                state["current_issue_index"] = i + 1
+
+            except Exception as e:
+                failed_issues.append({
+                    "issue": issue,
+                    "error": str(e)
+                })
+                self.logger.error(
+                    f"❌ Exception analyzing issue {issue.key}: {e}")
+
+        state["processed_issues"] = processed_issues
+        state["failed_issues"] = failed_issues
+
+        self.logger.info(
+            f"📊 Analysis complete: {len(processed_issues)} successful, {len(failed_issues)} failed")
+        return state
+
+    def _create_fix_plans_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
+        """Create fix plans for analyzed issues."""
+        processed_issues = state["processed_issues"]
+        self.logger.info(
+            f"🛠️ Creating fix plans for {len(processed_issues)} issues")
+
+        fix_plans = []
+
+        for issue in processed_issues:
+            try:
+                self.logger.info(f"📋 Creating fix plan for issue: {issue.key}")
+
+                # Generate fix plan
+                fix_plan = self.agent.generate_fix_plan(issue)
+
+                if fix_plan:
+                    fix_plans.append(fix_plan)
+                    self.logger.info(f"✅ Fix plan created for: {issue.key}")
+                else:
+                    self.logger.warning(
+                        f"⚠️ Could not create fix plan for: {issue.key}")
+
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Exception creating fix plan for {issue.key}: {e}")
+
+        state["fix_plans"] = fix_plans
+
+        self.logger.info(
+            f"📊 Fix plan creation complete: {len(fix_plans)} plans generated")
+        return state
+
+    def _save_fix_plans_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
+        """Save fix plans to storage."""
+        fix_plans = state["fix_plans"]
+        project_key = state["project_key"]
+
+        self.logger.info(f"💾 Saving {len(fix_plans)} fix plans to storage")
+
+        try:
+            saved_count = 0
+            for fix_plan in fix_plans:
+                success = self.fix_plan_storage.save_fix_plan(
+                    fix_plan, project_key)
+                if success:
+                    saved_count += 1
+
+            self.logger.info(
+                f"✅ Saved {saved_count}/{len(fix_plans)} fix plans to storage")
+
+            if saved_count != len(fix_plans):
+                self.logger.warning(
+                    f"⚠️ {len(fix_plans) - saved_count} fix plans failed to save")
+
+        except Exception as e:
+            self.logger.error(f"❌ Exception saving fix plans: {e}")
+            # Don't fail the workflow for storage issues
+
+        return state
 
     def _finalize_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
-        """Finalize the workflow and create summary."""
+        """Finalize the Bug Hunter workflow."""
         self.logger.info("🏁 Finalizing Bug Hunter workflow")
-        
+
         # Stop metrics tracking
         metrics = self.agent.stop_metrics_tracking()
-        
+
         # Create final results
+        processed_count = len(state["processed_issues"])
+        failed_count = len(state["failed_issues"])
+        fix_plans_count = len(state["fix_plans"])
+        total_issues = state["total_issues"]
+
         results = {
             "status": "success",
-            "message": f"Processed {state['processed_issues']} out of {state['total_issues']} issues",
+            "message": f"Processed {processed_count}/{total_issues} issues and created {fix_plans_count} fix plans",
+            "total_issues": total_issues,
+            "processed_issues": processed_count,
+            "failed_issues": failed_count,
+            "total_plans": fix_plans_count,
             "fix_plans": state["fix_plans"],
-            "total_plans": len(state["fix_plans"]),
             "processing_time": metrics.processing_time_seconds if metrics else 0,
             "agent": "BugHunterAgent",
             "timestamp": datetime.now().isoformat()
         }
-        
+
         state["results"] = results
         state["workflow_status"] = "completed"
-        
+
         # Final workflow summary
-        success_rate = state["processed_issues"] / state["total_issues"] if state["total_issues"] > 0 else 1.0
-        
-        self.logger.info("Workflow completed successfully", 
-                       total_issues=state["total_issues"],
-                       processed_issues=state["processed_issues"],
-                       fix_plans_created=len(state["fix_plans"]),
-                       processing_time_seconds=metrics.processing_time_seconds if metrics else 0,
-                       success_rate=success_rate,
-                       session_id=state.get("session_id"))
-        
-        # Log quality metrics
-        self.agent.log_quality_score(
-            "workflow_success_rate",
-            success_rate,
-            f"Successfully processed {state['processed_issues']}/{state['total_issues']} issues"
-        )
-        
-        self.logger.info(f"✅ Workflow completed: {len(state['fix_plans'])} fix plans created")
+        success_rate = processed_count / total_issues if total_issues > 0 else 1.0
+
+        self.logger.info("Bug Hunter workflow completed",
+                         total_issues=total_issues,
+                         processed_issues=processed_count,
+                         fix_plans_created=fix_plans_count,
+                         success_rate=success_rate,
+                         processing_time_seconds=metrics.processing_time_seconds if metrics else 0,
+                         session_id=state.get("session_id"))
+
+        self.logger.info(
+            f"✅ Bug Hunter completed: {fix_plans_count} fix plans created from {processed_count} issues")
         return state
-    
+
     def _handle_error_node(self, state: BugHunterWorkflowState) -> BugHunterWorkflowState:
         """Handle workflow errors."""
         error_msg = state.get("error_message", "Unknown error")
-        self.logger.error(f"❌ Workflow error: {error_msg}")
-        
+        self.logger.error(f"❌ Bug Hunter workflow error: {error_msg}")
+
         # Stop metrics tracking
         self.agent.stop_metrics_tracking()
-        
+
         # Create error results
         state["results"] = {
             "status": "error",
             "message": error_msg,
-            "fix_plans": state.get("fix_plans", []),
+            "total_issues": state.get("total_issues", 0),
+            "processed_issues": len(state.get("processed_issues", [])),
+            "failed_issues": len(state.get("failed_issues", [])),
             "total_plans": len(state.get("fix_plans", [])),
             "agent": "BugHunterAgent",
             "timestamp": datetime.now().isoformat()
         }
-        
-        # Log error details
-        self.logger.error("Workflow error occurred", 
-                        error_message=error_msg,
-                        processed_issues=state.get("processed_issues", 0),
-                        total_issues=state.get("total_issues", 0),
-                        session_id=state.get("session_id"))
-        
+
         return state
-    
-    def _check_issues_available(self, state: BugHunterWorkflowState) -> str:
-        """Check if there are issues to process."""
-        if state["workflow_status"] == "error":
-            return "error"
-        
-        if not state["sonar_issues"] or len(state["sonar_issues"]) == 0:
-            self.logger.info("ℹ️ No issues found to process")
-            return "finalize"
-        
-        return "process"
-    
+
     def _check_for_errors(self, state: BugHunterWorkflowState) -> str:
         """Check if there are errors in the current state."""
         if state["workflow_status"] == "error":
             return "error"
         return "continue"
-    
 
-    
-    def run(self, project_key: Optional[str] = None,
-            severities: Optional[List[str]] = None,
-            issue_types: Optional[List[str]] = None) -> Dict[str, Any]:
-        """
-        Run the Bug Hunter workflow.
-        
-        Args:
-            project_key: SonarQube project key
-            severities: List of severities to process
-            issue_types: List of issue types to process
-            
-        Returns:
-            Workflow results
-        """
-        self.logger.info("🚀 Starting Bug Hunter LangGraph workflow")
-        
+    def run(self, project_key: str, severities: List[str], issue_types: List[str]) -> Dict[str, Any]:
+        """Run the Bug Hunter workflow."""
+        self.logger.info("🔍 Starting Bug Hunter LangGraph workflow")
+
         # Initialize state
         initial_state = BugHunterWorkflowState(
             project_key=project_key,
-            severities=severities or ['BLOCKER', 'CRITICAL', 'MAJOR'],
-            issue_types=issue_types or ['BUG', 'VULNERABILITY', 'CODE_SMELL'],
-            sonar_issues=[],
+            severities=severities,
+            issue_types=issue_types,
+            issues=[],
             fix_plans=[],
             current_issue_index=0,
+            total_issues=0,
+            processed_issues=[],
+            failed_issues=[],
             workflow_status="initialized",
             error_message=None,
-            processed_issues=0,
-            total_issues=0,
-            langfuse_trace_id=None,
-            langfuse_session_id=None,
+            session_id=None,
             results={}
         )
-        
+
         try:
-            # Run the workflow with configuration
-            config = {"recursion_limit": 50}  # Set reasonable recursion limit
+            # Run the workflow
+            config = {"recursion_limit": 50}
             final_state = self.workflow.invoke(initial_state, config=config)
-            
+
             self.logger.info("✅ Bug Hunter workflow completed")
             return final_state["results"]
-            
+
         except Exception as e:
-            self.logger.error(f"❌ Workflow execution failed: {e}")
+            self.logger.error(f"❌ Bug Hunter workflow execution failed: {e}")
             return {
                 "status": "error",
                 "message": f"Workflow execution failed: {str(e)}",
-                "fix_plans": [],
+                "total_issues": 0,
+                "processed_issues": 0,
+                "failed_issues": 0,
                 "total_plans": 0,
                 "agent": "BugHunterAgent",
                 "timestamp": datetime.now().isoformat()
             }
-    
+
     def visualize_workflow(self) -> str:
         """Get a visual representation of the workflow."""
-        try:
-            # This would generate a visual graph of the workflow
-            return "Workflow visualization: Initialize -> Prepare Repository -> Connect SonarQube -> Fetch Issues -> Analyze Issue -> Create Fix Plan -> Update Langfuse -> (Continue/Finalize)"
-        except Exception as e:
-            return f"Could not generate visualization: {e}"
-    
+        return "Bug Hunter Workflow: Initialize -> Fetch Issues -> Analyze Issues -> Create Fix Plans -> Save Fix Plans -> Finalize"
+
     def get_mermaid_diagram(self) -> str:
         """Generate Mermaid diagram representation of the workflow."""
         return """
 graph TD
-    A[Initialize] --> B[Prepare Repository]
-    B --> C[Connect SonarQube]
-    C --> D[Fetch Issues]
-    D --> E[Analyze Issue]
-    E --> F[Create Fix Plan]
-    F --> G[Update Langfuse]
-    G --> H{More Issues?}
-    H -->|Yes| E
-    H -->|No| I[Finalize]
+    A[Initialize] --> B[Fetch SonarQube Issues]
+    B --> C[Analyze Issues]
+    C --> D[Create Fix Plans]
+    D --> E[Save Fix Plans]
+    E --> F[Finalize]
     
-    B --> J[Handle Error]
-    C --> J
-    D --> J
-    E --> J
-    F --> J
-    G --> J
+    B --> G[Handle Error]
+    C --> G
+    D --> G
     
-    I --> K[END]
-    J --> K
+    F --> H[END]
+    G --> H
     
     style A fill:#e1f5fe
-    style I fill:#c8e6c9
-    style J fill:#ffcdd2
-    style K fill:#f3e5f5
+    style B fill:#fff3e0
+    style C fill:#e8f5e8
+    style D fill:#f3e5f5
+    style E fill:#fff9c4
+    style F fill:#c8e6c9
+    style G fill:#ffcdd2
+    style H fill:#f3e5f5
 """
-    
-    def draw_workflow_png(self) -> bytes:
+
+    def draw_workflow_png(self) -> Optional[bytes]:
         """Generate PNG image of the workflow graph."""
         try:
-            # Try to use the LangGraph built-in visualization
             return self.workflow.get_graph().draw_mermaid_png()
         except Exception as e:
             self.logger.warning(f"Could not generate PNG: {e}")
             return None
-    
-    def save_workflow_diagram(self, filename: str = "workflow_diagram.png") -> bool:
-        """Save workflow diagram as PNG file."""
-        try:
-            png_data = self.draw_workflow_png()
-            if png_data:
-                with open(filename, 'wb') as f:
-                    f.write(png_data)
-                self.logger.info(f"Workflow diagram saved as {filename}")
-                return True
-            else:
-                # Fallback: save Mermaid text
-                mermaid_text = self.get_mermaid_diagram()
-                with open(filename.replace('.png', '.mmd'), 'w') as f:
-                    f.write(mermaid_text)
-                self.logger.info(f"Mermaid diagram saved as {filename.replace('.png', '.mmd')}")
-                return True
-        except Exception as e:
-            self.logger.error(f"Failed to save workflow diagram: {e}")
-            return False

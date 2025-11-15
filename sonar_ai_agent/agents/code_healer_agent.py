@@ -1,836 +1,620 @@
 """
-Code Healer Agent - Applies actual code fixes based on Bug Hunter Agent suggestions.
-
-This agent receives FixPlan objects from the Bug Hunter Agent and:
-1. Reads and analyzes the target code files
-2. Generates concrete code fixes using LLM
-3. Applies fixes to files with backup and validation
-4. Creates Git branches and commits with the changes
-5. Generates merge requests for review
+Code Healer Agent - Applies SonarQube fixes to source code.
+Implements automated code healing with validation and metrics tracking.
 """
 
 import os
 import re
+import ast
+import json
+import time
+from typing import Dict, List, Any, Optional, Union
+from datetime import datetime
+import tempfile
 import shutil
 import subprocess
-from typing import List, Dict, Any, Optional, Tuple
-from pathlib import Path
-import tempfile
-from datetime import datetime
 
-from .base_agent import BaseAgent
-from ..models import FixPlan, CodeFix, ValidationResult, AgentMetrics
-from ..integrations.git_client import GitClient
+from ..models import FixPlan, AgentMetrics
 from ..config import Config
+from ..utils.logger import get_logger
 
 
-class CodeContext:
-    """Context information about the code being fixed."""
-    
-    def __init__(self, file_path: str, content: str, target_line: int):
-        self.file_path = file_path
-        self.content = content
-        self.target_line = target_line
-        self.lines = content.split('\n')
-        
-    @property
-    def target_line_content(self) -> str:
-        """Get the content of the target line."""
-        if 0 <= self.target_line - 1 < len(self.lines):
-            return self.lines[self.target_line - 1]
-        return ""
-    
-    def get_context_around_line(self, context_lines: int = 10) -> str:
-        """Get code context around the target line."""
-        start = max(0, self.target_line - context_lines - 1)
-        end = min(len(self.lines), self.target_line + context_lines)
-        
-        context_with_numbers = []
-        for i in range(start, end):
-            line_num = i + 1
-            marker = " -> " if line_num == self.target_line else "    "
-            context_with_numbers.append(f"{line_num:3d}{marker}{self.lines[i]}")
-        
-        return '\n'.join(context_with_numbers)
+class CodeHealerAgent:
+    """Agent responsible for applying SonarQube fixes to source code."""
 
-
-class JavaCodeValidator:
-    """Validates Java code syntax and compilation."""
-    
     def __init__(self, config: Config):
+        """Initialize Code Healer Agent."""
         self.config = config
-        self.temp_dir = tempfile.mkdtemp(prefix="code_healer_")
-    
-    def validate_syntax(self, java_code: str, file_path: str) -> ValidationResult:
-        """Validate Java code syntax by attempting compilation."""
-        syntax_errors = []
-        linting_errors = []
-        security_warnings = []
-        
-        try:
-            # Create temporary file for validation
-            temp_file = os.path.join(self.temp_dir, os.path.basename(file_path))
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                f.write(java_code)
-            
-            # Try to compile with javac if available
-            try:
-                result = subprocess.run(
-                    ['javac', '-cp', '.', temp_file],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if result.returncode != 0:
-                    syntax_errors.append(f"Compilation failed: {result.stderr}")
-                
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                # javac not available or timeout, do basic syntax checks
-                syntax_errors.extend(self._basic_syntax_check(java_code))
-            
-            # Basic linting checks
-            linting_errors.extend(self._basic_linting_check(java_code))
-            
-            # Security checks
-            security_warnings.extend(self._basic_security_check(java_code))
-            
-        except Exception as e:
-            syntax_errors.append(f"Validation error: {str(e)}")
-        
-        finally:
-            # Cleanup temp file
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-        
-        is_valid = len(syntax_errors) == 0
-        confidence = 1.0 if is_valid else max(0.0, 1.0 - len(syntax_errors) * 0.2)
-        
-        return ValidationResult(
-            is_valid=is_valid,
-            syntax_errors=syntax_errors,
-            linting_errors=linting_errors,
-            security_warnings=security_warnings,
-            confidence_score=confidence
-        )
-    
-    def _basic_syntax_check(self, java_code: str) -> List[str]:
-        """Basic Java syntax validation."""
-        errors = []
-        
-        # Check for balanced braces
-        brace_count = java_code.count('{') - java_code.count('}')
-        if brace_count != 0:
-            errors.append(f"Unbalanced braces: {brace_count} extra opening braces" if brace_count > 0 else f"{-brace_count} extra closing braces")
-        
-        # Check for balanced parentheses
-        paren_count = java_code.count('(') - java_code.count(')')
-        if paren_count != 0:
-            errors.append(f"Unbalanced parentheses: {paren_count} extra opening" if paren_count > 0 else f"{-paren_count} extra closing")
-        
-        # Check for basic Java keywords and structure
-        if 'class ' in java_code and not re.search(r'class\s+\w+', java_code):
-            errors.append("Invalid class declaration syntax")
-        
-        return errors
-    
-    def _basic_linting_check(self, java_code: str) -> List[str]:
-        """Basic Java linting checks."""
-        warnings = []
-        
-        # Check for unused imports (basic check)
-        import_lines = [line for line in java_code.split('\n') if line.strip().startswith('import ')]
-        for import_line in import_lines:
-            if 'import ' in import_line:
-                imported_class = import_line.split('.')[-1].replace(';', '').strip()
-                if imported_class not in java_code.replace(import_line, ''):
-                    warnings.append(f"Potentially unused import: {import_line.strip()}")
-        
-        return warnings
-    
-    def _basic_security_check(self, java_code: str) -> List[str]:
-        """Basic security checks."""
-        warnings = []
-        
-        # Check for SQL injection patterns
-        if re.search(r'Statement.*executeQuery.*\+', java_code):
-            warnings.append("Potential SQL injection: String concatenation in SQL query")
-        
-        # Check for hardcoded passwords
-        if re.search(r'password\s*=\s*["\'][^"\']+["\']', java_code, re.IGNORECASE):
-            warnings.append("Potential hardcoded password detected")
-        
-        return warnings
-    
-    def cleanup(self):
-        """Clean up temporary directory."""
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
 
+        # Initialize file-based logger
+        self.logger = get_logger(config, "sonar_ai_agent.code_healer_agent")
 
-class BackupManager:
-    """Manages file backups before applying fixes."""
-    
-    def __init__(self, backup_dir: str = "backups"):
-        self.backup_dir = Path(backup_dir)
-        self.backup_dir.mkdir(exist_ok=True)
-        
-    def create_backup(self, file_path: str) -> str:
-        """Create a backup of the file and return backup path."""
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Cannot backup non-existent file: {file_path}")
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"{os.path.basename(file_path)}.{timestamp}.backup"
-        backup_path = self.backup_dir / backup_name
-        
-        shutil.copy2(file_path, backup_path)
-        return str(backup_path)
-    
-    def restore_backup(self, original_path: str, backup_path: str) -> bool:
-        """Restore file from backup."""
-        try:
-            if os.path.exists(backup_path):
-                shutil.copy2(backup_path, original_path)
-                return True
-            return False
-        except Exception:
-            return False
+        # Metrics tracking
+        self.metrics = None
+        self.start_time = None
 
+        # Validation settings
+        self.validate_syntax = config.validate_syntax if hasattr(
+            config, 'validate_syntax') else True
+        self.validate_security = config.validate_security if hasattr(
+            config, 'validate_security') else True
+        self.backup_files = config.backup_files if hasattr(
+            config, 'backup_files') else True
 
-class CodeHealerAgent(BaseAgent):
-    """Agent that applies code fixes based on Bug Hunter suggestions."""
-    
-    def __init__(self, config: Config):
-        super().__init__(config, "CodeHealerAgent")
-        self.git_client = GitClient(config)
-        self.java_validator = JavaCodeValidator(config)
-        self.backup_manager = BackupManager()
-        
-        # Configuration
-        self.prefer_try_with_resources = True
-        self.max_fixes_per_branch = 10
-        self.create_backup = True
-        self.validate_compilation = False  # Disabled by default for Spring Boot projects
-        self.auto_create_mr = True
-        self.batch_similar_fixes = True
-        self.min_confidence_for_auto_fix = 0.8
-    
-    def process(self, fix_plans: List[FixPlan]) -> Dict[str, Any]:
-        """Main processing method for applying code fixes."""
-        self.start_metrics_tracking()
-        
-        try:
-            self.logger.info(f"Starting Code Healer processing", 
-                           fix_plans_count=len(fix_plans),
-                           session_id=self.session_id)
-            
-            applied_fixes = []
-            created_branches = []
-            merge_requests = []
-            errors = []
-            
-            # Group fixes by file or similarity if batching is enabled
-            fix_groups = self._group_fixes(fix_plans) if self.batch_similar_fixes else [[fp] for fp in fix_plans]
-            
-            for group_index, fix_group in enumerate(fix_groups):
-                try:
-                    self.logger.info(f"Processing fix group {group_index + 1}/{len(fix_groups)}", 
-                                   fixes_in_group=len(fix_group))
-                    
-                    group_fixes = []
-                    
-                    # Generate fixes first (without applying to files)
-                    prepared_fixes = []
-                    for fix_plan in fix_group:
-                        try:
-                            # Generate the fix but don't apply it yet
-                            code_fix = self._generate_code_fix_only(fix_plan)
-                            if code_fix and self._validate_fix_content(code_fix):
-                                prepared_fixes.append(code_fix)
-                            
-                        except Exception as e:
-                            error_msg = f"Failed to generate fix for {fix_plan.issue_key}: {str(e)}"
-                            errors.append(error_msg)
-                            self.log_error(e, f"Generating fix {fix_plan.issue_key}")
-                    
-                    # Create Git branch and apply fixes in the correct order
-                    if prepared_fixes:
-                        try:
-                            branch_name, applied_group_fixes = self._create_branch_and_apply_fixes(prepared_fixes)
-                            created_branches.append(branch_name)
-                            
-                            # Add successfully applied fixes to results
-                            for fix in applied_group_fixes:
-                                group_fixes.append(fix)
-                                applied_fixes.append(fix)
-                                if self.metrics:
-                                    self.metrics.fixes_validated += 1
-                            
-                            # Create merge request if enabled
-                            if self.auto_create_mr:
-                                mr_url = self._create_merge_request(group_fixes, branch_name)
-                                if mr_url:
-                                    merge_requests.append(mr_url)
-                                    
-                                    if self.metrics:
-                                        self.metrics.merge_requests_created += 1
-                        
-                        except Exception as e:
-                            error_msg = f"Failed to create Git branch for group {group_index + 1}: {str(e)}"
-                            errors.append(error_msg)
-                            self.log_error(e, f"Git operations for group {group_index + 1}")
-                
-                except Exception as e:
-                    error_msg = f"Failed to process fix group {group_index + 1}: {str(e)}"
-                    errors.append(error_msg)
-                    self.log_error(e, f"Processing fix group {group_index + 1}")
-            
-            # Update metrics
-            if self.metrics:
-                self.metrics.issues_processed = len(fix_plans)
-                self.metrics.fixes_generated = len(applied_fixes)
-            
-            # Prepare results
-            results = {
-                "session_id": self.session_id,
-                "total_fix_plans": len(fix_plans),
-                "fixes_applied": len(applied_fixes),
-                "fixes_validated": len([f for f in applied_fixes if f.is_valid]),
-                "branches_created": len(created_branches),
-                "merge_requests_created": len(merge_requests),
-                "success_rate": len(applied_fixes) / len(fix_plans) if fix_plans else 0.0,
-                "errors": errors,
-                "applied_fixes": applied_fixes,
-                "created_branches": created_branches,
-                "merge_requests": merge_requests
-            }
-            
-            self.logger.info("Code Healer processing completed", **{k: v for k, v in results.items() if k != "applied_fixes"})
-            
-            return results
-            
-        except Exception as e:
-            self.log_error(e, "Code Healer main processing")
-            raise
-        
-        finally:
-            self.stop_metrics_tracking()
-            self.java_validator.cleanup()
-    
-    def _generate_code_fix_only(self, fix_plan: FixPlan) -> Optional[CodeFix]:
-        """Generate a code fix without applying it to files."""
-        try:
-            self.logger.info(f"Generating fix for issue {fix_plan.issue_key}", 
-                           file_path=fix_plan.file_path,
-                           line_number=fix_plan.line_number,
-                           confidence=fix_plan.confidence_score)
-            
-            # Check confidence threshold
-            if fix_plan.confidence_score < self.min_confidence_for_auto_fix:
-                self.logger.warning(f"Skipping fix due to low confidence", 
-                                  issue_key=fix_plan.issue_key,
-                                  confidence=fix_plan.confidence_score,
-                                  threshold=self.min_confidence_for_auto_fix)
-                return None
-            
-            # Read and analyze code
-            context = self._read_and_analyze_code(fix_plan)
-            if not context:
-                return None
-            
-            # Generate code fix (but don't apply to file yet)
-            code_fix = self._generate_code_fix(fix_plan, context)
-            return code_fix
-            
-        except Exception as e:
-            self.log_error(e, f"Generating fix {fix_plan.issue_key}")
-            return None
-    
-    def _validate_fix_content(self, code_fix: CodeFix) -> bool:
-        """Validate fix content without applying to files."""
-        try:
-            if not code_fix or not code_fix.fixed_code:
-                return False
-            
-            # Basic validation - ensure we have actual code
-            if len(code_fix.fixed_code.strip()) < 10:
-                return False
-            
-            # Ensure it's different from original
-            if code_fix.fixed_code == code_fix.original_code:
-                self.logger.warning(f"Fix identical to original for {code_fix.fix_plan.issue_key}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            self.log_error(e, f"Validating fix content for {code_fix.fix_plan.issue_key}")
-            return False
-    
-    def _create_branch_and_apply_fixes(self, prepared_fixes: List[CodeFix]) -> Tuple[str, List[CodeFix]]:
-        """Create branch first, then apply fixes in the correct order."""
-        try:
-            # Generate branch name
-            if len(prepared_fixes) == 1:
-                branch_name = self._generate_branch_name(prepared_fixes[0].fix_plan)
-            else:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                branch_name = f"fix/sonar-batch-{timestamp}-resource-leaks"
-            
-            # Step 1: Create and checkout branch FIRST
-            if not self.git_client.create_branch(branch_name):
-                raise Exception(f"Failed to create branch: {branch_name}")
-            
-            self.logger.info(f"Created and switched to branch: {branch_name}")
-            
-            # Step 2: Apply fixes to files (now we're safely in the new branch)
-            applied_fixes = []
-            for code_fix in prepared_fixes:
-                try:
-                    if self._apply_fix_to_file(code_fix):
-                        # Validate the applied fix
-                        validation_result = self._validate_fix(code_fix)
-                        code_fix.validation_status = validation_result.is_valid
-                        code_fix.validation_errors = validation_result.all_issues
-                        
-                        if validation_result.is_valid:
-                            applied_fixes.append(code_fix)
-                            self.logger.info(f"Successfully applied fix for {code_fix.fix_plan.issue_key}")
-                        else:
-                            self.logger.warning(f"Fix validation failed for {code_fix.fix_plan.issue_key}")
-                            # Restore backup if validation fails
-                            self._restore_from_backup(code_fix.fix_plan.file_path)
-                    
-                except Exception as e:
-                    self.log_error(e, f"Applying fix {code_fix.fix_plan.issue_key}")
-                    # Continue with other fixes even if one fails
-            
-            if not applied_fixes:
-                # No fixes were successfully applied, clean up branch
-                subprocess.run(['git', 'checkout', self.config.target_repo_branch], 
-                             cwd=self.config.target_repo_path, capture_output=True)
-                raise Exception("No fixes were successfully applied")
-            
-            # Step 3: Commit changes
-            modified_files = [fix.fix_plan.file_path for fix in applied_fixes]
-            
-            if len(applied_fixes) == 1:
-                commit_message = applied_fixes[0].commit_message
-            else:
-                commit_message = f"fix(sonar): resolve {len(applied_fixes)} resource leak issues\n\n" + \
-                               "\n".join([f"- {fix.fix_plan.issue_key}: {os.path.basename(fix.fix_plan.file_path)}" 
-                                        for fix in applied_fixes])
-            
-            if not self.git_client.commit_changes(modified_files, commit_message):
-                raise Exception(f"Failed to commit changes to branch: {branch_name}")
-            
-            # Step 4: Push branch to remote
-            if not self.git_client.push_branch(branch_name):
-                self.logger.warning(f"Failed to push branch to remote: {branch_name}")
-            else:
-                self.logger.info(f"Successfully pushed branch to remote: {branch_name}")
-            
-            self.logger.info(f"Successfully created branch with fixes", 
-                           branch_name=branch_name,
-                           fixes_applied=len(applied_fixes))
-            
-            return branch_name, applied_fixes
-            
-        except Exception as e:
-            self.log_error(e, f"Creating branch and applying fixes")
-            # Try to switch back to main branch if something went wrong
-            try:
-                subprocess.run(['git', 'checkout', self.config.target_repo_branch], 
-                             cwd=self.config.target_repo_path, capture_output=True)
-            except:
-                pass
-            raise
-    
-    def _read_and_analyze_code(self, fix_plan: FixPlan) -> Optional[CodeContext]:
-        """Read target file and analyze code context."""
-        try:
-            # Construct full path using the target repository path from config
-            full_file_path = os.path.join(self.config.target_repo_path, fix_plan.file_path)
-            
-            if not os.path.exists(full_file_path):
-                self.logger.error(f"File not found: {full_file_path} (relative: {fix_plan.file_path})")
-                return None
-            
-            with open(full_file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            context = CodeContext(full_file_path, content, fix_plan.line_number)
-            
-            self.logger.debug(f"Read code context for {full_file_path}", 
-                            file_size=len(content),
-                            total_lines=len(context.lines),
-                            target_line=fix_plan.line_number)
-            
-            return context
-            
-        except Exception as e:
-            self.log_error(e, f"Reading code context for {fix_plan.file_path}")
-            return None
-    
-    def _generate_code_fix(self, fix_plan: FixPlan, context: CodeContext) -> Optional[CodeFix]:
-        """Generate actual code fix using LLM."""
-        try:
-            # Create specialized prompt for Java code fixing
-            system_prompt = self._create_system_prompt()
-            user_prompt = self._create_user_prompt(fix_plan, context)
-            
-            # Generate fix using LLM
-            fixed_code_section = self.generate_response(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-                temperature=0.3,  # Lower temperature for more deterministic code fixes
-                max_tokens=4096
-            )
-            
-            # Extract the fixed code from the response
-            fixed_code = self._extract_fixed_code(fixed_code_section, context)
-            if not fixed_code:
-                self.logger.error(f"Could not extract valid fixed code for {fix_plan.issue_key}")
-                return None
-            
-            # Generate diff
-            diff = self._generate_diff(context.content, fixed_code)
-            
-            # Create branch name and commit message
-            branch_name = self._generate_branch_name(fix_plan)
-            commit_message = self._generate_commit_message(fix_plan)
-            
-            code_fix = CodeFix(
-                fix_plan=fix_plan,
-                original_code=context.content,
-                fixed_code=fixed_code,
-                diff=diff,
-                validation_status=False,  # Will be set during validation
-                validation_errors=[],
-                branch_name=branch_name,
-                commit_message=commit_message
-            )
-            
-            self.logger.info(f"Generated code fix for {fix_plan.issue_key}", 
-                           original_size=len(context.content),
-                           fixed_size=len(fixed_code),
-                           diff_lines=len(diff.split('\n')))
-            
-            return code_fix
-            
-        except Exception as e:
-            self.log_error(e, f"Generating code fix for {fix_plan.issue_key}")
-            return None
-    
-    def _create_system_prompt(self) -> str:
-        """Create system prompt for LLM code fixing."""
-        return """You are an expert Java developer specializing in fixing resource leak issues in Spring Boot applications.
+    def apply_fix(self, fix_plan: FixPlan) -> Dict[str, Any]:
+        """Apply a single fix plan to the source code."""
+        self.logger.info(f"🔧 Applying fix for issue: {fix_plan.issue_key}")
 
-Your task is to generate precise code fixes that:
-1. Follow Java best practices and Spring Boot conventions
-2. Properly handle resource management (Connections, Statements, ResultSets)
-3. Maintain existing functionality while fixing the resource leak
-4. Use appropriate patterns (try-with-resources or finally blocks)
-5. Include proper error handling and logging
+        start_time = time.time()
 
-IMPORTANT INSTRUCTIONS:
-- Generate ONLY the complete fixed file content
-- Maintain the same class structure, imports, and method signatures
-- Do not add explanatory text or comments about the fix
-- Ensure the code compiles and runs correctly
-- Use try-with-resources pattern when possible for resource management
-- Add proper exception handling where needed"""
-    
-    def _create_user_prompt(self, fix_plan: FixPlan, context: CodeContext) -> str:
-        """Create user prompt for specific fix."""
-        return f"""Fix this resource leak issue in Java code:
-
-**Issue**: {fix_plan.issue_description}
-**File**: {fix_plan.file_path}:{fix_plan.line_number}
-**Problem**: {fix_plan.problem_analysis}
-**Solution Strategy**: {fix_plan.proposed_solution}
-
-**Current Code Context** (around line {fix_plan.line_number}):
-```java
-{context.get_context_around_line(15)}
-```
-
-**Target Line** (line {fix_plan.line_number}):
-```java
-{context.target_line_content}
-```
-
-**Complete File Content**:
-```java
-{context.content}
-```
-
-Please provide the complete fixed file content that resolves the resource leak while maintaining all existing functionality."""
-    
-    def _extract_fixed_code(self, llm_response: str, context: CodeContext) -> Optional[str]:
-        """Extract fixed code from LLM response."""
         try:
-            # Look for code blocks in the response
-            code_blocks = re.findall(r'```java\n(.*?)\n```', llm_response, re.DOTALL)
-            
-            if code_blocks:
-                # Use the largest code block (likely the complete file)
-                fixed_code = max(code_blocks, key=len).strip()
-            else:
-                # If no code blocks, try to extract the entire response as code
-                fixed_code = llm_response.strip()
-            
-            # Basic validation - should contain class declaration if original did
-            if 'class ' in context.content and 'class ' not in fixed_code:
-                self.logger.warning("Fixed code missing class declaration")
-                return None
-            
-            return fixed_code
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting fixed code: {str(e)}")
-            return None
-    
-    def _generate_diff(self, original: str, fixed: str) -> str:
-        """Generate a simple diff between original and fixed code."""
-        try:
-            import difflib
-            
-            original_lines = original.splitlines(keepends=True)
-            fixed_lines = fixed.splitlines(keepends=True)
-            
-            diff = ''.join(difflib.unified_diff(
-                original_lines,
-                fixed_lines,
-                fromfile='original',
-                tofile='fixed',
-                lineterm=''
-            ))
-            
-            return diff
-            
-        except Exception:
-            return f"Original: {len(original)} chars\nFixed: {len(fixed)} chars"
-    
-    def _apply_fix_to_file(self, code_fix: CodeFix) -> bool:
-        """Apply the generated fix to the actual file."""
-        try:
-            # Use the full file path from the code context
-            file_path = code_fix.fix_plan.file_path
-            full_file_path = os.path.join(self.config.target_repo_path, file_path)
-            
+            # Validate fix plan
+            if not self._validate_fix_plan(fix_plan):
+                return {
+                    "success": False,
+                    "error": "Invalid fix plan",
+                    "issue_key": fix_plan.issue_key
+                }
+
+            # Check if file exists
+            if not os.path.exists(fix_plan.file_path):
+                return {
+                    "success": False,
+                    "error": f"File not found: {fix_plan.file_path}",
+                    "issue_key": fix_plan.issue_key
+                }
+
             # Create backup if enabled
             backup_path = None
-            if self.create_backup:
-                backup_path = self.backup_manager.create_backup(full_file_path)
-                self.logger.info(f"Created backup for {full_file_path}", backup_path=backup_path)
-            
-            # Write fixed code to file
-            with open(full_file_path, 'w', encoding='utf-8') as f:
-                f.write(code_fix.fixed_code)
-            
-            self.logger.info(f"Applied fix to {full_file_path}", 
-                           issue_key=code_fix.fix_plan.issue_key,
-                           backup_created=backup_path is not None)
-            
-            return True
-            
-        except Exception as e:
-            self.log_error(e, f"Applying fix to {code_fix.fix_plan.file_path}")
-            return False
-    
-    def _validate_fix(self, code_fix: CodeFix) -> ValidationResult:
-        """Validate the applied fix."""
-        try:
-            if self.validate_compilation:
-                return self.java_validator.validate_syntax(
-                    code_fix.fixed_code,
-                    code_fix.fix_plan.file_path
-                )
-            else:
-                # Basic validation without compilation
-                return ValidationResult(
-                    is_valid=True,
-                    syntax_errors=[],
-                    linting_errors=[],
-                    security_warnings=[],
-                    confidence_score=0.8
-                )
-                
-        except Exception as e:
-            self.log_error(e, f"Validating fix for {code_fix.fix_plan.issue_key}")
-            return ValidationResult(
-                is_valid=False,
-                syntax_errors=[f"Validation error: {str(e)}"],
-                linting_errors=[],
-                security_warnings=[],
-                confidence_score=0.0
+            if self.backup_files:
+                backup_path = self._create_backup(fix_plan.file_path)
+
+            # Read original file
+            original_content = self._read_file(fix_plan.file_path)
+            if original_content is None:
+                return {
+                    "success": False,
+                    "error": f"Could not read file: {fix_plan.file_path}",
+                    "issue_key": fix_plan.issue_key
+                }
+
+            # Apply the fix
+            fixed_content = self._apply_fix_to_content(
+                original_content, fix_plan)
+            if fixed_content is None:
+                return {
+                    "success": False,
+                    "error": "Failed to apply fix to content",
+                    "issue_key": fix_plan.issue_key
+                }
+
+            # Validate fixed content
+            validation_result = self._validate_fixed_content(
+                fixed_content,
+                fix_plan.file_path,
+                original_content
             )
-    
-    def _restore_from_backup(self, file_path: str) -> bool:
-        """Restore file from backup."""
-        try:
-            # Use full file path
-            full_file_path = os.path.join(self.config.target_repo_path, file_path)
-            
-            # Find the most recent backup for this file
-            backup_files = list(self.backup_manager.backup_dir.glob(f"{os.path.basename(file_path)}.*.backup"))
-            if backup_files:
-                latest_backup = max(backup_files, key=os.path.getctime)
-                success = self.backup_manager.restore_backup(full_file_path, str(latest_backup))
-                if success:
-                    self.logger.info(f"Restored {full_file_path} from backup", backup_file=str(latest_backup))
-                return success
-            return False
-            
+
+            if not validation_result["valid"]:
+                return {
+                    "success": False,
+                    "error": f"Validation failed: {validation_result['errors']}",
+                    "issue_key": fix_plan.issue_key
+                }
+
+            # Write fixed content to file
+            if not self._write_file(fix_plan.file_path, fixed_content):
+                return {
+                    "success": False,
+                    "error": f"Could not write to file: {fix_plan.file_path}",
+                    "issue_key": fix_plan.issue_key
+                }
+
+            # Calculate metrics
+            processing_time = time.time() - start_time
+            lines_changed = self._count_changed_lines(
+                original_content, fixed_content)
+
+            result = {
+                "success": True,
+                "issue_key": fix_plan.issue_key,
+                "file_path": fix_plan.file_path,
+                "lines_changed": lines_changed,
+                "processing_time": processing_time,
+                "backup_path": backup_path,
+                "confidence_score": fix_plan.confidence_score,
+                "fix_type": getattr(fix_plan, 'fix_type', 'unknown'),
+                "severity": getattr(fix_plan, 'severity', 'unknown')
+            }
+
+            self.logger.info(
+                f"✅ Successfully applied fix: {fix_plan.issue_key}")
+            return result
+
         except Exception as e:
-            self.log_error(e, f"Restoring backup for {file_path}")
-            return False
-    
-    def _group_fixes(self, fix_plans: List[FixPlan]) -> List[List[FixPlan]]:
-        """Group fixes for batching."""
-        if not self.batch_similar_fixes:
-            return [[fp] for fp in fix_plans]
-        
-        # Group by file path
-        file_groups = {}
-        for fix_plan in fix_plans:
-            file_path = fix_plan.file_path
-            if file_path not in file_groups:
-                file_groups[file_path] = []
-            file_groups[file_path].append(fix_plan)
-        
-        # Split large groups
-        groups = []
-        for file_fixes in file_groups.values():
-            if len(file_fixes) <= self.max_fixes_per_branch:
-                groups.append(file_fixes)
-            else:
-                # Split into smaller groups
-                for i in range(0, len(file_fixes), self.max_fixes_per_branch):
-                    groups.append(file_fixes[i:i + self.max_fixes_per_branch])
-        
-        return groups
-    
-    def _generate_branch_name(self, fix_plan: FixPlan) -> str:
-        """Generate Git branch name for fix."""
-        issue_key_short = fix_plan.issue_key[:8] if len(fix_plan.issue_key) > 8 else fix_plan.issue_key
-        file_name = os.path.basename(fix_plan.file_path).replace('.java', '')
-        return f"fix/sonar-{issue_key_short}-{file_name}-resource-leak"
-    
-    def _generate_commit_message(self, fix_plan: FixPlan) -> str:
-        """Generate Git commit message for fix."""
-        return f"""fix(sonar): resolve resource leak in {os.path.basename(fix_plan.file_path)}
+            self.logger.error(
+                f"❌ Exception applying fix {fix_plan.issue_key}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "issue_key": fix_plan.issue_key
+            }
 
-- Issue: {fix_plan.issue_key}
-- Type: Resource Leak
-- File: {fix_plan.file_path}:{fix_plan.line_number}
-- Fix: {fix_plan.proposed_solution[:100]}...
-- Confidence: {fix_plan.confidence_score:.2f}
+    def validate_changes(self) -> Dict[str, Any]:
+        """Validate all changes made during the current session."""
+        self.logger.info("🔍 Validating all applied changes")
 
-Resolves SonarQube issue: {fix_plan.issue_key}"""
-    
-
-    
-    def _create_merge_request(self, fixes: List[CodeFix], branch_name: str) -> Optional[str]:
-        """Create merge request for the fixes."""
         try:
-            # Generate MR title and description
-            if len(fixes) == 1:
-                fix = fixes[0]
-                title = f"Fix SonarQube issue: {fix.fix_plan.issue_key}"
-                description = self._generate_mr_description(fix)
+            validation_results = {
+                "valid": True,
+                "errors": [],
+                "warnings": [],
+                "syntax_valid": True,
+                "security_valid": True
+            }
+
+            # Check for Python syntax errors across all changed files
+            if self.validate_syntax:
+                syntax_result = self._validate_python_syntax()
+                validation_results["syntax_valid"] = syntax_result["valid"]
+                if not syntax_result["valid"]:
+                    validation_results["errors"].extend(
+                        syntax_result["errors"])
+
+            # Run security validation
+            if self.validate_security:
+                security_result = self._validate_security()
+                validation_results["security_valid"] = security_result["valid"]
+                if security_result["warnings"]:
+                    validation_results["warnings"].extend(
+                        security_result["warnings"])
+
+            # Overall validation
+            validation_results["valid"] = (
+                validation_results["syntax_valid"] and
+                validation_results["security_valid"]
+            )
+
+            if validation_results["valid"]:
+                self.logger.info("✅ All changes validated successfully")
             else:
-                title = f"Fix {len(fixes)} SonarQube resource leak issues"
-                description = self._generate_batch_mr_description(fixes)
-            
-            # Generate proper GitHub pull request URL
-            # Extract repository info from target repo URL
-            repo_url = self.config.target_repo_url
-            if repo_url and "github.com" in repo_url:
-                # Extract owner/repo from GitHub URL
-                # e.g., https://github.com/naveenvivek/SpringBootAppSonarAI -> naveenvivek/SpringBootAppSonarAI
-                repo_path = repo_url.replace("https://github.com/", "").replace(".git", "")
-                mr_url = f"https://github.com/{repo_path}/compare/{self.config.target_repo_branch}...{branch_name}?expand=1"
-            else:
-                # Fallback for non-GitHub repositories
-                mr_url = f"Pull request ready for branch: {branch_name}"
-            
-            self.logger.info(f"Merge request ready for creation", 
-                           branch_name=branch_name,
-                           title=title,
-                           description_length=len(description),
-                           fixes_count=len(fixes),
-                           pull_request_url=mr_url)
-            
-            return mr_url
-            
+                self.logger.warning(
+                    f"⚠️ Validation issues found: {validation_results['errors']}")
+
+            return validation_results
+
         except Exception as e:
-            self.log_error(e, f"Creating merge request for branch {branch_name}")
+            self.logger.error(f"❌ Validation error: {e}")
+            return {
+                "valid": False,
+                "errors": [str(e)],
+                "warnings": [],
+                "syntax_valid": False,
+                "security_valid": False
+            }
+
+    def start_metrics_tracking(self):
+        """Start tracking metrics for the Code Healer session."""
+        self.start_time = time.time()
+        self.metrics = AgentMetrics(
+            agent_name="CodeHealerAgent",
+            start_time=datetime.now(),
+            end_time=None,
+            processing_time_seconds=0,
+            issues_processed=0,
+            fixes_applied=0,
+            success_rate=0.0,
+            confidence_scores=[],
+            errors=[]
+        )
+        self.logger.info("📊 Started metrics tracking for Code Healer")
+
+    def stop_metrics_tracking(self) -> Optional[AgentMetrics]:
+        """Stop metrics tracking and return results."""
+        if self.metrics and self.start_time:
+            self.metrics.end_time = datetime.now()
+            self.metrics.processing_time_seconds = time.time() - self.start_time
+            self.logger.info("📊 Stopped metrics tracking for Code Healer")
+            return self.metrics
+        return None
+
+    def _validate_fix_plan(self, fix_plan: FixPlan) -> bool:
+        """Validate fix plan completeness and consistency."""
+        required_fields = [
+            'issue_key', 'file_path', 'line_number',
+            'issue_description', 'proposed_solution', 'confidence_score'
+        ]
+
+        for field in required_fields:
+            if not hasattr(fix_plan, field) or not getattr(fix_plan, field):
+                self.logger.warning(
+                    f"⚠️ Fix plan missing required field: {field}")
+                return False
+
+        # Validate confidence score
+        if not (0.0 <= fix_plan.confidence_score <= 1.0):
+            self.logger.warning(
+                f"⚠️ Invalid confidence score: {fix_plan.confidence_score}")
+            return False
+
+        return True
+
+    def _create_backup(self, file_path: str) -> Optional[str]:
+        """Create backup of file before modification."""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_dir = os.path.join(
+                os.path.dirname(file_path), ".sonar_backups")
+            os.makedirs(backup_dir, exist_ok=True)
+
+            filename = os.path.basename(file_path)
+            backup_filename = f"{filename}.{timestamp}.backup"
+            backup_path = os.path.join(backup_dir, backup_filename)
+
+            shutil.copy2(file_path, backup_path)
+            self.logger.debug(f"💾 Created backup: {backup_path}")
+            return backup_path
+
+        except Exception as e:
+            self.logger.warning(
+                f"⚠️ Could not create backup for {file_path}: {e}")
             return None
-    
-    def _generate_mr_description(self, fix: CodeFix) -> str:
-        """Generate merge request description for single fix."""
-        return f"""## SonarQube Issue Fix
 
-**Issue ID**: {fix.fix_plan.issue_key}
-**Severity**: Resource Leak
-**Confidence**: {fix.fix_plan.confidence_score:.2f}
+    def _read_file(self, file_path: str) -> Optional[str]:
+        """Read file content safely."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            self.logger.error(f"❌ Could not read file {file_path}: {e}")
+            return None
 
-### Problem
-{fix.fix_plan.problem_analysis}
+    def _write_file(self, file_path: str, content: str) -> bool:
+        """Write content to file safely."""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ Could not write file {file_path}: {e}")
+            return False
 
-### Solution
-{fix.fix_plan.proposed_solution}
+    def _apply_fix_to_content(self, content: str, fix_plan: FixPlan) -> Optional[str]:
+        """Apply fix to file content based on the fix plan."""
+        try:
+            lines = content.split('\n')
 
-### Files Changed
-- `{fix.fix_plan.file_path}` (line {fix.fix_plan.line_number})
+            # Validate line number
+            if fix_plan.line_number < 1 or fix_plan.line_number > len(lines):
+                self.logger.error(
+                    f"❌ Invalid line number {fix_plan.line_number} for file with {len(lines)} lines")
+                return None
 
-### Code Changes
-```diff
-{fix.diff}
-```
+            # Get the fix type and apply appropriate transformation
+            fix_type = getattr(fix_plan, 'fix_type', 'replace')
 
-### Validation
-- [{'x' if fix.validation_status else ' '}] Code compiles successfully
-- [{'x' if fix.validation_status else ' '}] Functionality preserved
-- [{'x' if fix.validation_status else ' '}] Resource leak resolved
-- [x] Best practices followed
+            if fix_type == 'replace':
+                return self._apply_replace_fix(lines, fix_plan)
+            elif fix_type == 'insert':
+                return self._apply_insert_fix(lines, fix_plan)
+            elif fix_type == 'delete':
+                return self._apply_delete_fix(lines, fix_plan)
+            elif fix_type == 'regex':
+                return self._apply_regex_fix(content, fix_plan)
+            else:
+                # Default to intelligent fix application
+                return self._apply_intelligent_fix(lines, fix_plan)
 
-### Side Effects
-{', '.join(fix.fix_plan.potential_side_effects) if fix.fix_plan.potential_side_effects else 'None identified'}
+        except Exception as e:
+            self.logger.error(f"❌ Exception applying fix: {e}")
+            return None
 
-### Testing
-- Manual testing performed: Recommended
-- Unit tests updated: Not required for this fix
-- Integration tests passed: Recommended to verify"""
-    
-    def _generate_batch_mr_description(self, fixes: List[CodeFix]) -> str:
-        """Generate merge request description for batch fixes."""
-        files_changed = [f"- `{fix.fix_plan.file_path}` (line {fix.fix_plan.line_number})" for fix in fixes]
-        
-        return f"""## SonarQube Batch Fix: Resource Leaks
+    def _apply_replace_fix(self, lines: List[str], fix_plan: FixPlan) -> str:
+        """Apply a replace-type fix."""
+        line_index = fix_plan.line_number - 1
 
-**Issues Fixed**: {len(fixes)}
-**Type**: Resource Leak Resolution
-**Average Confidence**: {sum(fix.fix_plan.confidence_score for fix in fixes) / len(fixes):.2f}
+        # Extract the new line content from proposed solution
+        new_content = self._extract_fix_content(fix_plan.proposed_solution)
 
-### Problems Resolved
-This batch fix resolves multiple resource leak issues identified by SonarQube analysis.
+        # Preserve indentation from original line
+        original_line = lines[line_index]
+        indentation = self._get_line_indentation(original_line)
 
-### Files Changed
-{chr(10).join(files_changed)}
+        # Apply indentation to new content
+        if new_content.strip():
+            lines[line_index] = indentation + new_content.strip()
+        else:
+            lines[line_index] = new_content
 
-### Validation Summary
-- Fixes applied: {len(fixes)}
-- Validation passed: {len([f for f in fixes if f.validation_status])}
-- Compilation successful: {len([f for f in fixes if f.validation_status])}
+        return '\n'.join(lines)
 
-### Issue Details
-{chr(10).join([f"- **{fix.fix_plan.issue_key}**: {fix.fix_plan.proposed_solution[:100]}..." for fix in fixes])}
+    def _apply_insert_fix(self, lines: List[str], fix_plan: FixPlan) -> str:
+        """Apply an insert-type fix."""
+        line_index = fix_plan.line_number - 1
 
-### Testing
-- Manual testing recommended for all modified files
-- Integration tests should be run to verify functionality
-- No unit test updates required for these fixes"""
+        # Extract the content to insert
+        new_content = self._extract_fix_content(fix_plan.proposed_solution)
+
+        # Get indentation from surrounding lines
+        indentation = self._get_contextual_indentation(lines, line_index)
+
+        # Insert new line
+        new_line = indentation + new_content.strip() if new_content.strip() else new_content
+        lines.insert(line_index, new_line)
+
+        return '\n'.join(lines)
+
+    def _apply_delete_fix(self, lines: List[str], fix_plan: FixPlan) -> str:
+        """Apply a delete-type fix."""
+        line_index = fix_plan.line_number - 1
+
+        # Remove the line
+        if 0 <= line_index < len(lines):
+            lines.pop(line_index)
+
+        return '\n'.join(lines)
+
+    def _apply_regex_fix(self, content: str, fix_plan: FixPlan) -> str:
+        """Apply a regex-based fix."""
+        try:
+            # Extract pattern and replacement from proposed solution
+            solution = fix_plan.proposed_solution
+
+            # Look for patterns like "Replace: pattern -> replacement"
+            if " -> " in solution:
+                parts = solution.split(" -> ", 1)
+                if len(parts) == 2:
+                    pattern = parts[0].replace("Replace: ", "").strip()
+                    replacement = parts[1].strip()
+
+                    # Apply regex replacement
+                    fixed_content = re.sub(
+                        pattern, replacement, content, flags=re.MULTILINE)
+                    return fixed_content
+
+            # Fallback to line-based fix
+            lines = content.split('\n')
+            return self._apply_intelligent_fix(lines, fix_plan)
+
+        except Exception as e:
+            self.logger.warning(
+                f"⚠️ Regex fix failed, falling back to intelligent fix: {e}")
+            lines = content.split('\n')
+            return self._apply_intelligent_fix(lines, fix_plan)
+
+    def _apply_intelligent_fix(self, lines: List[str], fix_plan: FixPlan) -> str:
+        """Apply an intelligent fix based on issue description and solution."""
+        line_index = fix_plan.line_number - 1
+        original_line = lines[line_index]
+
+        # Analyze the issue and proposed solution
+        issue_desc = fix_plan.issue_description.lower()
+        solution = fix_plan.proposed_solution.lower()
+
+        # Common SonarQube issue patterns and fixes
+        if "unused import" in issue_desc or "unused variable" in issue_desc:
+            # Remove the line
+            lines.pop(line_index)
+        elif "missing" in solution or "add" in solution:
+            # Insert new content
+            new_content = self._extract_fix_content(fix_plan.proposed_solution)
+            indentation = self._get_line_indentation(original_line)
+            new_line = indentation + new_content.strip()
+            lines.insert(line_index, new_line)
+        elif "replace" in solution or "change" in solution:
+            # Replace content
+            new_content = self._extract_fix_content(fix_plan.proposed_solution)
+            indentation = self._get_line_indentation(original_line)
+            lines[line_index] = indentation + new_content.strip()
+        else:
+            # Default to content extraction from solution
+            new_content = self._extract_fix_content(fix_plan.proposed_solution)
+            if new_content and new_content != original_line.strip():
+                indentation = self._get_line_indentation(original_line)
+                lines[line_index] = indentation + new_content.strip()
+
+        return '\n'.join(lines)
+
+    def _extract_fix_content(self, proposed_solution: str) -> str:
+        """Extract the actual code content from proposed solution."""
+        # Remove common prefixes and explanatory text
+        solution = proposed_solution.strip()
+
+        # Remove common solution prefixes
+        prefixes_to_remove = [
+            "Replace with:", "Change to:", "Use:", "Replace line with:",
+            "Fix:", "Solution:", "Correction:", "Updated code:"
+        ]
+
+        for prefix in prefixes_to_remove:
+            if solution.lower().startswith(prefix.lower()):
+                solution = solution[len(prefix):].strip()
+                break
+
+        # Extract code from code blocks
+        if "```" in solution:
+            # Extract from code block
+            parts = solution.split("```")
+            if len(parts) >= 3:
+                # Get the code block content
+                code_block = parts[1]
+                # Remove language identifier
+                lines = code_block.strip().split('\n')
+                if lines and not lines[0].strip().startswith(('import', 'def', 'class', 'if', 'for', 'while')):
+                    lines = lines[1:]  # Remove language identifier
+                return '\n'.join(lines).strip()
+
+        # Remove quotes if the entire solution is quoted
+        if solution.startswith('"') and solution.endswith('"'):
+            solution = solution[1:-1]
+        elif solution.startswith("'") and solution.endswith("'"):
+            solution = solution[1:-1]
+
+        return solution
+
+    def _get_line_indentation(self, line: str) -> str:
+        """Get the indentation (leading whitespace) of a line."""
+        return line[:len(line) - len(line.lstrip())]
+
+    def _get_contextual_indentation(self, lines: List[str], line_index: int) -> str:
+        """Get appropriate indentation based on surrounding context."""
+        # Check previous non-empty line
+        for i in range(line_index - 1, -1, -1):
+            if lines[i].strip():
+                return self._get_line_indentation(lines[i])
+
+        # Check next non-empty line
+        for i in range(line_index + 1, len(lines)):
+            if lines[i].strip():
+                return self._get_line_indentation(lines[i])
+
+        return ""
+
+    def _validate_fixed_content(self, content: str, file_path: str, original_content: str) -> Dict[str, Any]:
+        """Validate the fixed content for syntax and other issues."""
+        validation = {
+            "valid": True,
+            "errors": [],
+            "warnings": []
+        }
+
+        # Check for Python syntax if it's a Python file
+        if file_path.endswith('.py'):
+            try:
+                ast.parse(content)
+            except SyntaxError as e:
+                validation["valid"] = False
+                validation["errors"].append(f"Python syntax error: {e}")
+
+        # Check that content was actually changed
+        if content == original_content:
+            validation["warnings"].append(
+                "Content unchanged after fix application")
+
+        # Check for common issues
+        lines = content.split('\n')
+        for i, line in enumerate(lines, 1):
+            # Check for obvious syntax issues
+            stripped = line.strip()
+            if stripped.endswith(',,') or stripped.endswith(';;'):
+                validation["warnings"].append(
+                    f"Line {i}: Potential syntax issue with double punctuation")
+
+        return validation
+
+    def _validate_python_syntax(self) -> Dict[str, Any]:
+        """Validate Python syntax across all Python files in the current directory."""
+        result = {
+            "valid": True,
+            "errors": []
+        }
+
+        try:
+            # Find all Python files in current directory and subdirectories
+            python_files = []
+            for root, dirs, files in os.walk('.'):
+                for file in files:
+                    if file.endswith('.py'):
+                        python_files.append(os.path.join(root, file))
+
+            # Check syntax of each Python file
+            for file_path in python_files:
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+
+                    ast.parse(content)
+
+                except SyntaxError as e:
+                    result["valid"] = False
+                    result["errors"].append(f"{file_path}: {e}")
+                except Exception as e:
+                    # Skip files that can't be read
+                    continue
+
+        except Exception as e:
+            result["errors"].append(f"Syntax validation error: {e}")
+
+        return result
+
+    def _validate_security(self) -> Dict[str, Any]:
+        """Perform basic security validation."""
+        result = {
+            "valid": True,
+            "warnings": []
+        }
+
+        # This is a placeholder for security validation
+        # In a production environment, you might integrate with security tools
+        # like bandit for Python, or other static analysis tools
+
+        # For now, we'll just check for obvious security anti-patterns
+        security_patterns = [
+            r'eval\s*\(',
+            r'exec\s*\(',
+            r'os\.system\s*\(',
+            r'subprocess\.call\s*\([^)]*shell\s*=\s*True',
+        ]
+
+        try:
+            for root, dirs, files in os.walk('.'):
+                for file in files:
+                    if file.endswith('.py'):
+                        file_path = os.path.join(root, file)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+
+                            for pattern in security_patterns:
+                                if re.search(pattern, content):
+                                    result["warnings"].append(
+                                        f"{file_path}: Potential security issue detected (pattern: {pattern})"
+                                    )
+                        except Exception:
+                            continue
+
+        except Exception as e:
+            result["warnings"].append(f"Security validation error: {e}")
+
+        return result
+
+    def _count_changed_lines(self, original: str, modified: str) -> int:
+        """Count the number of lines that were changed."""
+        original_lines = original.split('\n')
+        modified_lines = modified.split('\n')
+
+        # Simple diff count - could be made more sophisticated
+        max_lines = max(len(original_lines), len(modified_lines))
+        changed_count = 0
+
+        for i in range(max_lines):
+            original_line = original_lines[i] if i < len(
+                original_lines) else ""
+            modified_line = modified_lines[i] if i < len(
+                modified_lines) else ""
+
+            if original_line != modified_line:
+                changed_count += 1
+
+        return changed_count
+
+    def get_agent_info(self) -> Dict[str, Any]:
+        """Get information about the Code Healer Agent."""
+        return {
+            "agent_name": "CodeHealerAgent",
+            "version": "1.0.0",
+            "capabilities": [
+                "Apply SonarQube fixes",
+                "Syntax validation",
+                "Security validation",
+                "File backup",
+                "Metrics tracking",
+                "Multiple fix types (replace, insert, delete, regex)"
+            ],
+            "supported_languages": ["Python", "Java", "JavaScript", "TypeScript"],
+            "validation_enabled": {
+                "syntax": self.validate_syntax,
+                "security": self.validate_security
+            },
+            "backup_enabled": self.backup_files
+        }

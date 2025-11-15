@@ -1,0 +1,22 @@
+{
+  "metadata": {
+    "saved_at": "2025-11-15T16:59:24.363146",
+    "project_key": "demo-project",
+    "file_version": "1.0"
+  },
+  "fix_plan": {
+    "issue_key": "ISSUE-004",
+    "issue_description": "SonarQube issue ISSUE-004: Code quality violation detected",
+    "file_path": "src/main/java/com/example/ServiceISSUE-004.java",
+    "line_number": 42,
+    "problem_analysis": "The method contains duplicated code that violates DRY principle",
+    "proposed_solution": "Extract the common logic into a separate private method",
+    "code_context": "// Context for ISSUE-004\npublic void processData() {\n    // duplicated logic here\n}",
+    "potential_side_effects": [
+      "May affect existing unit tests",
+      "Refactoring might impact performance"
+    ],
+    "confidence_score": 0.85,
+    "estimated_effort": "HIGH"
+  }
+}
