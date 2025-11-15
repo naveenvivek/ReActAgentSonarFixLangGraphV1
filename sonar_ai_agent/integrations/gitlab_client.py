@@ -1,5 +1,5 @@
 """
-Git client for handling repository operations, branch management, and merge requests.
+GitLab client for handling repository operations, branch management, and merge requests.
 Implements single branch atomic fixes strategy.
 """
 
@@ -15,13 +15,13 @@ from ..config import Config
 from ..utils.logger import get_logger
 
 
-class GitClient:
-    """Git client for repository operations with atomic fixes support."""
+class GitLabClient:
+    """GitLab client for repository operations with atomic fixes support."""
 
     def __init__(self, config: Config):
         """Initialize Git client."""
         self.config = config
-        self.logger = get_logger(config, "sonar_ai_agent.git_client")
+        self.logger = get_logger(config, "sonar_ai_agent.gitlab_client")
 
         # Git configuration
         self.repo_path = config.git_repo_path if hasattr(

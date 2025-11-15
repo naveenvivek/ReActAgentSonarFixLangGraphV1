@@ -15,7 +15,7 @@ from ..models import FixPlan
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.fixplan_storage import FixPlanStorage
-from ..integrations.git_client import GitClient
+from ..integrations.gitlab_client import GitLabClient
 
 
 class CodeHealerWorkflowState(TypedDict):
@@ -60,7 +60,7 @@ class CodeHealerWorkflow:
 
         # Initialize fix plan storage and Git client
         self.fix_plan_storage = FixPlanStorage()
-        self.git_client = GitClient(config)
+        self.git_client = GitLabClient(config)
 
         # Build the workflow graph
         self.workflow = self._build_workflow()

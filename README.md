@@ -133,7 +133,7 @@ sonar_ai_agent/
 │   └── bug_hunter_agent.py     # Main Bug Hunter Agent
 ├── integrations/
 │   ├── sonarqube_client.py     # SonarQube API client
-│   └── git_client.py           # Git operations
+│   └── gitlab_client.py        # GitLab operations
 ├── workflows/
 │   └── bug_hunter_workflow.py  # LangGraph workflow
 ├── config.py                   # Configuration management
