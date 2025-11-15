@@ -75,7 +75,7 @@ class CodeHealerWorkflow:
         workflow.add_node("create_branch", self._create_branch_node)
         workflow.add_node("apply_fixes", self._apply_fixes_node)
         workflow.add_node("validate_changes", self._validate_changes_node)
-        workflow.add_node("build_validation", self._build_validation_node)
+        workflow.add_node("maven_clean_build", self._build_validation_node)
         workflow.add_node("commit_and_push", self._commit_and_push_node)
         workflow.add_node("create_merge_request",
                           self._create_merge_request_node)
@@ -109,11 +109,11 @@ class CodeHealerWorkflow:
         workflow.add_conditional_edges(
             "validate_changes",
             self._check_for_errors,
-            {"continue": "build_validation", "error": "handle_error"}
+            {"continue": "maven_clean_build", "error": "handle_error"}
         )
 
         workflow.add_conditional_edges(
-            "build_validation",
+            "maven_clean_build",
             self._check_for_errors,
             {"continue": "commit_and_push", "error": "handle_error"}
         )
@@ -298,7 +298,7 @@ class CodeHealerWorkflow:
 
     def _build_validation_node(self, state: CodeHealerWorkflowState) -> CodeHealerWorkflowState:
         """Run build validation to ensure fixes don't break the build."""
-        self.logger.info("🔨 Running build validation")
+        self.logger.info("🔨 Running Maven clean build")
 
         try:
             import subprocess
@@ -766,36 +766,38 @@ class CodeHealerWorkflow:
 
     def visualize_workflow(self) -> str:
         """Get a visual representation of the workflow."""
-        return "Code Healer Workflow: Initialize -> Validate Fix Plans -> Create Branch -> Apply Fixes (Atomic) -> Validate Changes -> Commit & Push -> Create MR -> Finalize"
+        return "Code Healer Workflow: Initialize -> Validate Fix Plans -> Create Branch -> Apply Fixes (Atomic) -> Validate Changes -> Maven Clean Build -> Commit & Push -> Create MR -> Finalize"
 
     def get_mermaid_diagram(self) -> str:
         """Generate Mermaid diagram representation of the workflow."""
         return """
 graph TD
     A[Initialize] --> B[Validate Fix Plans]
-    B --> C[Create Single Branch]
-    C --> D[Apply All Fixes Atomically]
+    B --> C[Create Branch]
+    C --> D[Apply Fixes]
     D --> E[Validate Changes]
-    E --> F[Commit & Push]
-    F --> G[Create Merge Request]
-    G --> H[Finalize]
+    E --> F[Maven Clean Build]
+    F --> G[Commit & Push]
+    G --> H[Create Merge Request]
+    H --> I[Finalize]
     
-    B --> I[Handle Error]
-    C --> I
-    D --> I
-    E --> I
-    F --> I
+    B --> J[Handle Error]
+    C --> J
+    D --> J
+    E --> J
+    G --> J
     
-    H --> J[END]
-    I --> J
+    I --> K[END]
+    J --> K
     
     style A fill:#e1f5fe
     style D fill:#fff3e0
-    style F fill:#e8f5e8
-    style G fill:#f3e5f5
-    style H fill:#c8e6c9
-    style I fill:#ffcdd2
-    style J fill:#f3e5f5
+    style F fill:#fff9c4
+    style G fill:#e8f5e8
+    style H fill:#f3e5f5
+    style I fill:#c8e6c9
+    style J fill:#ffcdd2
+    style K fill:#f3e5f5
 """
 
     def draw_workflow_png(self) -> Optional[bytes]:
