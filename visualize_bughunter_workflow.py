@@ -76,15 +76,13 @@ def display_bughunter_workflow_diagram():
         print("\n🎯 Workflow Nodes Details:")
         print("-" * 40)
         nodes = [
-            "1. Initialize - Start workflow and Langfuse tracking",
-            "2. Prepare Repository - Clone/update SpringBootAppSonarAI",
-            "3. Connect SonarQube - Validate connection to localhost:9100",
-            "4. Fetch Issues - Get BLOCKER/CRITICAL/MAJOR issues",
-            "5. Analyze Issue - Use AWS Bedrock LLM for analysis",
-            "6. Create Fix Plan - Generate structured fix plan",
-            "7. Update Langfuse - Track metrics and scores",
-            "8. Finalize - Complete workflow and return results",
-            "9. Handle Error - Error recovery and logging"
+            "1. Initialize - Start workflow, metrics tracking, and session ID",
+            "2. Fetch Issues - Get SonarQube issues (BLOCKER/CRITICAL/MAJOR)",
+            "3. Analyze Issues - Use AWS Bedrock AI for issue analysis",
+            "4. Create Fix Plans - Generate structured fix plans with AI",
+            "5. Save Fix Plans - Store fix plans to JSON storage",
+            "6. Finalize - Complete workflow and return results",
+            "7. Handle Error - Error recovery and cleanup"
         ]
 
         for node in nodes:
@@ -93,11 +91,13 @@ def display_bughunter_workflow_diagram():
         print("\n🔗 Conditional Edges:")
         print("-" * 40)
         edges = [
-            "• More Issues? → Continue analyzing next issue",
-            "• All Done? → Finalize workflow",
-            "• Error? → Handle error and cleanup",
-            "• Repository Failed? → Error handler",
-            "• SonarQube Failed? → Error handler"
+            "• initialize → fetch_issues (always)",
+            "• fetch_issues → analyze_issues (if issues found) | error (if failed)",
+            "• analyze_issues → create_fix_plans (always)",
+            "• create_fix_plans → save_fix_plans (always)",
+            "• save_fix_plans → finalize (always)",
+            "• Any error → handle_error → END",
+            "• finalize → END"
         ]
 
         for edge in edges:

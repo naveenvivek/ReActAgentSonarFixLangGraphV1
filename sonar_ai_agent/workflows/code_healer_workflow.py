@@ -15,7 +15,7 @@ from ..models import FixPlan
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.fixplan_storage import FixPlanStorage
-from ..integrations.git_client import GitClient
+from ..integrations.gitlab_client import GitLabClient
 
 
 class CodeHealerWorkflowState(TypedDict):
@@ -28,6 +28,11 @@ class CodeHealerWorkflowState(TypedDict):
     branch_name: Optional[str]
     applied_fixes: List[Dict[str, Any]]
     failed_fixes: List[Dict[str, Any]]
+
+    # Build validation data
+    build_status: Optional[str]
+    build_output: Optional[str]
+    build_errors: List[str]
 
     # Status and metadata
     workflow_status: str  # 'running', 'completed', 'error'
@@ -55,7 +60,7 @@ class CodeHealerWorkflow:
 
         # Initialize fix plan storage and Git client
         self.fix_plan_storage = FixPlanStorage()
-        self.git_client = GitClient(config)
+        self.git_client = GitLabClient(config)
 
         # Build the workflow graph
         self.workflow = self._build_workflow()
@@ -70,6 +75,7 @@ class CodeHealerWorkflow:
         workflow.add_node("create_branch", self._create_branch_node)
         workflow.add_node("apply_fixes", self._apply_fixes_node)
         workflow.add_node("validate_changes", self._validate_changes_node)
+        workflow.add_node("maven_clean_build", self._build_validation_node)
         workflow.add_node("commit_and_push", self._commit_and_push_node)
         workflow.add_node("create_merge_request",
                           self._create_merge_request_node)
@@ -102,6 +108,12 @@ class CodeHealerWorkflow:
 
         workflow.add_conditional_edges(
             "validate_changes",
+            self._check_for_errors,
+            {"continue": "maven_clean_build", "error": "handle_error"}
+        )
+
+        workflow.add_conditional_edges(
+            "maven_clean_build",
             self._check_for_errors,
             {"continue": "commit_and_push", "error": "handle_error"}
         )
@@ -284,6 +296,174 @@ class CodeHealerWorkflow:
 
         return state
 
+    def _build_validation_node(self, state: CodeHealerWorkflowState) -> CodeHealerWorkflowState:
+        """Run build validation to check if fixes break the build (continues on failure with warning)."""
+        # Check if Maven build validation is disabled
+        if not getattr(self.config, 'enable_maven_build_validation', False):
+            self.logger.info(
+                "🔓 Maven build validation disabled - skipping build and proceeding to commit")
+            state["build_status"] = "skipped"
+            state["build_output"] = "Maven build validation disabled by configuration"
+            state["build_errors"] = []
+            return state
+
+        self.logger.info("🔨 Running Maven clean build")
+
+        try:
+            import subprocess
+            import os
+
+            # Change to the repository directory
+            repo_path = getattr(self.config, 'git_repo_path', os.getcwd())
+            original_cwd = os.getcwd()
+
+            # Detect project type and build tool
+            project_type = None
+            build_command = None
+
+            try:
+                os.chdir(repo_path)
+                self.logger.info(f"📁 Changed directory to: {repo_path}")
+
+                # Check what type of project this is
+                if os.path.exists('pom.xml'):
+                    project_type = 'maven'
+                    build_command = ['mvn', 'clean', 'install']
+                elif os.path.exists('build.gradle') or os.path.exists('build.gradle.kts'):
+                    project_type = 'gradle'
+                    if os.path.exists('gradlew'):
+                        build_command = ['./gradlew', 'clean', 'build']
+                    else:
+                        build_command = ['gradle', 'clean', 'build']
+                elif os.path.exists('package.json'):
+                    project_type = 'npm'
+                    build_command = ['npm', 'run', 'build']
+                elif os.path.exists('requirements.txt') or os.path.exists('setup.py'):
+                    project_type = 'python'
+                    # For Python, we can run syntax validation instead
+                    self.logger.info(
+                        "🐍 Python project detected, skipping build validation (syntax already validated)")
+                    state["build_status"] = "skipped"
+                    state["build_output"] = "Python project - syntax validation already performed"
+                    state["build_errors"] = []
+                    return state
+                else:
+                    self.logger.info(
+                        "❓ Unknown project type, skipping build validation")
+                    state["build_status"] = "skipped"
+                    state["build_output"] = "Unknown project type - build validation skipped"
+                    state["build_errors"] = []
+                    return state
+
+                self.logger.info(
+                    f"🏗️ {project_type.title()} project detected, executing: {' '.join(build_command)}")
+
+                # Check if build tool is available
+                try:
+                    # For Windows, try with .cmd extension as well
+                    cmd_variants = [build_command[0]]
+                    if os.name == 'nt' and not build_command[0].endswith('.cmd'):
+                        cmd_variants.append(build_command[0] + '.cmd')
+
+                    tool_found = False
+                    working_cmd = None
+
+                    for cmd_variant in cmd_variants:
+                        try:
+                            result = subprocess.run([cmd_variant, '--version'],
+                                                    capture_output=True, timeout=10, shell=True)
+                            if result.returncode == 0:
+                                tool_found = True
+                                working_cmd = cmd_variant
+                                # Update the command
+                                build_command[0] = cmd_variant
+                                break
+                        except (FileNotFoundError, subprocess.TimeoutExpired):
+                            continue
+
+                    if not tool_found:
+                        warning_msg = f"{build_command[0]} not found in PATH. Skipping build validation."
+                        self.logger.warning(f"⚠️ {warning_msg}")
+                        state["build_status"] = "skipped"
+                        state["build_output"] = warning_msg
+                        state["build_errors"] = []
+                        return state
+                    else:
+                        self.logger.info(f"✅ Found {working_cmd}")
+
+                except Exception as e:
+                    warning_msg = f"Error checking build tool availability: {str(e)}. Skipping build validation."
+                    self.logger.warning(f"⚠️ {warning_msg}")
+                    state["build_status"] = "skipped"
+                    state["build_output"] = warning_msg
+                    state["build_errors"] = []
+                    return state                # Run the build command
+                result = subprocess.run(
+                    build_command,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5 minute timeout
+                    shell=True   # Use shell to help with PATH resolution on Windows
+                )
+
+                # Store build results in state
+                state["build_status"] = "success" if result.returncode == 0 else "failed"
+                state["build_output"] = result.stdout
+                state["build_errors"] = result.stderr.split(
+                    '\n') if result.stderr else []
+
+                if result.returncode == 0:
+                    self.logger.info(
+                        f"✅ {project_type.title()} build validation passed successfully")
+                else:
+                    # Log detailed build output for debugging
+                    self.logger.warning(
+                        f"⚠️ {project_type.title()} build validation failed with exit code: {result.returncode}")
+
+                    # Always log the full error output for debugging
+                    if result.stderr:
+                        self.logger.error("📋 Full Maven stderr output:")
+                        # Last 20 lines
+                        for line in result.stderr.strip().split('\n')[-20:]:
+                            self.logger.error(f"   {line}")
+
+                    if result.stdout:
+                        self.logger.info("📋 Last 10 lines of Maven stdout:")
+                        # Last 10 lines
+                        for line in result.stdout.strip().split('\n')[-10:]:
+                            self.logger.info(f"   {line}")
+
+                    # Build validation enabled and failed - STOP workflow
+                    error_msg = f"{project_type.title()} build validation failed - stopping workflow to prevent committing broken code"
+                    self.logger.error(f"❌ {error_msg}")
+                    self.logger.error(
+                        "🔒 ENABLE_MAVEN_BUILD_VALIDATION=true - workflow stopped on build failure")
+                    state["build_status"] = "failed"
+                    state["error_message"] = error_msg
+                    state["workflow_status"] = "error"
+
+            finally:
+                # Always change back to original directory
+                os.chdir(original_cwd)
+
+        except subprocess.TimeoutExpired:
+            error_msg = f"{project_type.title()} build timed out after 5 minutes"
+            self.logger.error(f"❌ {error_msg}")
+            state["error_message"] = error_msg
+            state["workflow_status"] = "error"
+            state["build_status"] = "timeout"
+            state["build_errors"] = [error_msg]
+
+        except Exception as e:
+            error_msg = f"Build validation error: {str(e)}"
+            self.logger.error(f"❌ {error_msg}")
+            state["error_message"] = error_msg
+            state["workflow_status"] = "error"
+            state["build_status"] = "error"
+            state["build_errors"] = [str(e)]
+
+        return state
+
     def _commit_and_push_node(self, state: CodeHealerWorkflowState) -> CodeHealerWorkflowState:
         """Commit all changes atomically and push to remote."""
         self.logger.info("💾 Committing and pushing atomic changes")
@@ -426,6 +606,13 @@ class CodeHealerWorkflow:
         """Check if there are errors in the current state."""
         if state["workflow_status"] == "error":
             return "error"
+
+        # If Maven validation is enabled, check build status to prevent committing broken code
+        if getattr(self.config, 'enable_maven_build_validation', False) and state.get("build_status") == "failed":
+            self.logger.error(
+                "❌ Build validation failed - cannot proceed to commit")
+            return "error"
+
         return "continue"
 
     def _is_valid_fix_plan(self, fix_plan: FixPlan) -> bool:
@@ -546,6 +733,9 @@ class CodeHealerWorkflow:
             branch_name=None,
             applied_fixes=[],
             failed_fixes=[],
+            build_status=None,
+            build_output=None,
+            build_errors=[],
             workflow_status="initialized",
             error_message=None,
             current_fix_index=0,
@@ -612,36 +802,38 @@ class CodeHealerWorkflow:
 
     def visualize_workflow(self) -> str:
         """Get a visual representation of the workflow."""
-        return "Code Healer Workflow: Initialize -> Validate Fix Plans -> Create Branch -> Apply Fixes (Atomic) -> Validate Changes -> Commit & Push -> Create MR -> Finalize"
+        return "Code Healer Workflow: Initialize -> Validate Fix Plans -> Create Branch -> Apply Fixes (Atomic) -> Validate Changes -> Maven Clean Build -> Commit & Push -> Create MR -> Finalize"
 
     def get_mermaid_diagram(self) -> str:
         """Generate Mermaid diagram representation of the workflow."""
         return """
 graph TD
     A[Initialize] --> B[Validate Fix Plans]
-    B --> C[Create Single Branch]
-    C --> D[Apply All Fixes Atomically]
+    B --> C[Create Branch]
+    C --> D[Apply Fixes]
     D --> E[Validate Changes]
-    E --> F[Commit & Push]
-    F --> G[Create Merge Request]
-    G --> H[Finalize]
+    E --> F[Maven Clean Build]
+    F --> G[Commit & Push]
+    G --> H[Create Merge Request]
+    H --> I[Finalize]
     
-    B --> I[Handle Error]
-    C --> I
-    D --> I
-    E --> I
-    F --> I
+    B --> J[Handle Error]
+    C --> J
+    D --> J
+    E --> J
+    G --> J
     
-    H --> J[END]
-    I --> J
+    I --> K[END]
+    J --> K
     
     style A fill:#e1f5fe
     style D fill:#fff3e0
-    style F fill:#e8f5e8
-    style G fill:#f3e5f5
-    style H fill:#c8e6c9
-    style I fill:#ffcdd2
-    style J fill:#f3e5f5
+    style F fill:#fff9c4
+    style G fill:#e8f5e8
+    style H fill:#f3e5f5
+    style I fill:#c8e6c9
+    style J fill:#ffcdd2
+    style K fill:#f3e5f5
 """
 
     def draw_workflow_png(self) -> Optional[bytes]:

@@ -38,8 +38,7 @@ class CodeHealerAgent:
             config, 'validate_syntax') else True
         self.validate_security = config.validate_security if hasattr(
             config, 'validate_security') else True
-        self.backup_files = config.backup_files if hasattr(
-            config, 'backup_files') else True
+        self.backup_files = False  # Disabled as requested
 
     def apply_fix(self, fix_plan: FixPlan) -> Dict[str, Any]:
         """Apply a single fix plan to the source code."""
@@ -56,25 +55,28 @@ class CodeHealerAgent:
                     "issue_key": fix_plan.issue_key
                 }
 
+            # Resolve full file path relative to repository path
+            full_file_path = self._resolve_file_path(fix_plan.file_path)
+
             # Check if file exists
-            if not os.path.exists(fix_plan.file_path):
+            if not os.path.exists(full_file_path):
                 return {
                     "success": False,
-                    "error": f"File not found: {fix_plan.file_path}",
+                    "error": f"File not found: {full_file_path} (original: {fix_plan.file_path})",
                     "issue_key": fix_plan.issue_key
                 }
 
             # Create backup if enabled
             backup_path = None
             if self.backup_files:
-                backup_path = self._create_backup(fix_plan.file_path)
+                backup_path = self._create_backup(full_file_path)
 
             # Read original file
-            original_content = self._read_file(fix_plan.file_path)
+            original_content = self._read_file(full_file_path)
             if original_content is None:
                 return {
                     "success": False,
-                    "error": f"Could not read file: {fix_plan.file_path}",
+                    "error": f"Could not read file: {full_file_path}",
                     "issue_key": fix_plan.issue_key
                 }
 
@@ -91,7 +93,7 @@ class CodeHealerAgent:
             # Validate fixed content
             validation_result = self._validate_fixed_content(
                 fixed_content,
-                fix_plan.file_path,
+                full_file_path,
                 original_content
             )
 
@@ -103,10 +105,10 @@ class CodeHealerAgent:
                 }
 
             # Write fixed content to file
-            if not self._write_file(fix_plan.file_path, fixed_content):
+            if not self._write_file(full_file_path, fixed_content):
                 return {
                     "success": False,
-                    "error": f"Could not write to file: {fix_plan.file_path}",
+                    "error": f"Could not write to file: {full_file_path}",
                     "issue_key": fix_plan.issue_key
                 }
 
@@ -119,6 +121,7 @@ class CodeHealerAgent:
                 "success": True,
                 "issue_key": fix_plan.issue_key,
                 "file_path": fix_plan.file_path,
+                "full_file_path": full_file_path,
                 "lines_changed": lines_changed,
                 "processing_time": processing_time,
                 "backup_path": backup_path,
@@ -420,10 +423,22 @@ class CodeHealerAgent:
         # Remove common prefixes and explanatory text
         solution = proposed_solution.strip()
 
+        # Handle specific patterns from rule-based fixes
+        if ":" in solution and any(keyword in solution.lower() for keyword in ["use", "wrap", "replace"]):
+            # Extract code after the colon (for patterns like "Use: code" or "Wrap: code")
+            parts = solution.split(":", 1)
+            if len(parts) == 2:
+                solution = parts[1].strip()
+
         # Remove common solution prefixes
         prefixes_to_remove = [
             "Replace with:", "Change to:", "Use:", "Replace line with:",
-            "Fix:", "Solution:", "Correction:", "Updated code:"
+            "Fix:", "Solution:", "Correction:", "Updated code:",
+            "Use environment variable or configuration for password:",
+            "Wrap resource in try-with-resources block:",
+            "Use system property or configuration:",
+            "Replace with logger:",
+            "Define as constant:"
         ]
 
         for prefix in prefixes_to_remove:
@@ -440,7 +455,7 @@ class CodeHealerAgent:
                 code_block = parts[1]
                 # Remove language identifier
                 lines = code_block.strip().split('\n')
-                if lines and not lines[0].strip().startswith(('import', 'def', 'class', 'if', 'for', 'while')):
+                if lines and not lines[0].strip().startswith(('import', 'def', 'class', 'if', 'for', 'while', 'String', 'try')):
                     lines = lines[1:]  # Remove language identifier
                 return '\n'.join(lines).strip()
 
@@ -597,6 +612,18 @@ class CodeHealerAgent:
                 changed_count += 1
 
         return changed_count
+
+    def _resolve_file_path(self, file_path: str) -> str:
+        """Resolve file path relative to the repository root."""
+        # Get the repository path from config
+        repo_path = getattr(self.config, 'git_repo_path', os.getcwd())
+
+        # If path is already absolute and exists, use it
+        if os.path.isabs(file_path) and os.path.exists(file_path):
+            return file_path
+
+        # Otherwise, resolve relative to repository path
+        return os.path.join(repo_path, file_path)
 
     def get_agent_info(self) -> Dict[str, Any]:
         """Get information about the Code Healer Agent."""

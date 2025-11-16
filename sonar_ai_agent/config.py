@@ -34,7 +34,7 @@ class Config:
             os.getenv('SONAR_REQUEST_TIMEOUT', '30'))
 
         # Git Configuration
-        self.git_repo_path = os.getenv('GIT_REPO_PATH', os.getcwd())
+        self.git_repo_path = os.getenv('TARGET_GITLAB_REPO_PATH', os.getcwd())
         self.git_remote_name = os.getenv('GIT_REMOTE_NAME', 'origin')
         self.git_default_branch = os.getenv('GIT_DEFAULT_BRANCH', 'main')
 
@@ -60,7 +60,7 @@ class Config:
         self.langfuse_host = os.getenv('LANGFUSE_HOST')
 
         # Logging Configuration
-        self.log_file = os.getenv('LOG_FILE', 'logs/sonar_ai_agent.log')
+        self.log_file = self._generate_timestamped_log_path()
         self.log_level = os.getenv('LOG_LEVEL', 'INFO')
 
         # Agent Configuration
@@ -71,6 +71,9 @@ class Config:
         self.validate_security = self._parse_bool(
             os.getenv('VALIDATE_SECURITY', 'true'))
         self.backup_files = self._parse_bool(os.getenv('BACKUP_FILES', 'true'))
+        # Single flag: false=skip build and commit, true=run build and stop if fails
+        self.enable_maven_build_validation = self._parse_bool(
+            os.getenv('ENABLE_MAVEN_BUILD_VALIDATION', 'false'))
 
         # Workflow Configuration
         self.max_issues_per_run = int(os.getenv('MAX_ISSUES_PER_RUN', '50'))
@@ -78,6 +81,22 @@ class Config:
 
         # Ensure log directory exists
         os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+
+    def _generate_timestamped_log_path(self) -> str:
+        """Generate timestamped log file path."""
+        from datetime import datetime
+
+        # Get base log directory from env or default
+        base_log_file = os.getenv('LOG_FILE', 'logs/sonar_ai_agent.log')
+        log_dir = os.path.dirname(base_log_file)
+
+        # Generate timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        # Create timestamped filename with .json extension
+        log_filename = f"sonar_ai_agent_{timestamp}.json"
+
+        return os.path.join(log_dir, log_filename)
 
     def _parse_list(self, value: str) -> List[str]:
         """Parse comma-separated string to list."""

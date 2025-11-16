@@ -10,11 +10,21 @@ from sonar_ai_agent.config import Config
 import sys
 import logging
 import argparse
+import atexit
 from pathlib import Path
 
 # Add the project root to Python path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+
+# Global variable to track the logger for cleanup
+_global_logger = None
+
+
+def cleanup_json_log():
+    """Close JSON array in log file on exit."""
+    if _global_logger:
+        _global_logger.close_log_file()
 
 
 def setup_logging(verbose: bool = False):
@@ -89,9 +99,14 @@ def main():
         print(f"   - Severities: {', '.join(severities)}")
         print(f"   - Types: {', '.join(types)}")
 
+        # Register cleanup function
+        atexit.register(cleanup_json_log)
+
         # Initialize workflow based on mode
+        global _global_logger
         if args.mode == "complete":
             workflow = CompleteSonarWorkflow(config)
+            _global_logger = workflow.logger
             print(
                 f"[SUCCESS] Complete LangGraph workflow initialized (Bug Hunter + Code Healer)")
             print(
@@ -110,6 +125,7 @@ def main():
         elif args.mode == "code-healer":
             from sonar_ai_agent.workflows.code_healer_workflow import CodeHealerWorkflow
             workflow = CodeHealerWorkflow(config)
+            _global_logger = workflow.logger
             print("[SUCCESS] Code Healer LangGraph workflow initialized (Atomic Fixes)")
             print(
                 f"   - Actual Log File: {workflow.logger.get_log_file_path()}")
@@ -124,6 +140,7 @@ def main():
             result = workflow.run_from_storage(project_key)
         else:
             workflow = BugHunterWorkflow(config)
+            _global_logger = workflow.logger
             print("[SUCCESS] Bug Hunter LangGraph workflow initialized")
             print(
                 f"   - Actual Log File: {workflow.logger.get_log_file_path()}")
@@ -306,6 +323,9 @@ def main():
 
     print(
         f"   Check log file for detailed metrics and traces: {config.log_file}")
+
+    # Close JSON array before exit
+    cleanup_json_log()
     return 0
 
 

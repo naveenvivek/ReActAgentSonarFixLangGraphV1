@@ -76,14 +76,14 @@ def display_code_healer_workflow_diagram():
         print("\n🎯 Code Healer Workflow Nodes Details:")
         print("-" * 50)
         nodes = [
-            "1. Initialize - Start workflow and metrics tracking",
-            "2. Validate Fix Plans - Ensure input fix plans are valid",
-            "3. Group Fixes - Organize fixes by file/similarity for batching",
-            "4. Generate Code Fixes - Create actual code changes using LLM",
-            "5. Validate Generated Fixes - Verify syntax and security of fixes",
-            "6. Create Git Branch - Prepare version control branch",
-            "7. Apply Fixes - Write changes to actual code files",
-            "8. Create Merge Request - Prepare changes for review",
+            "1. Initialize - Start workflow, metrics tracking, and session ID",
+            "2. Validate Fix Plans - Ensure input fix plans are valid and complete",
+            "3. Create Branch - Create atomic Git branch with timestamp",
+            "4. Apply Fixes - Apply all fixes atomically to source code",
+            "5. Validate Changes - Verify syntax and security of applied changes",
+            "6. Maven Clean Build - Run Maven/Gradle build to ensure no build breaks",
+            "7. Commit and Push - Commit all changes and push to GitLab",
+            "8. Create Merge Request - Create MR for code review",
             "9. Finalize - Complete workflow and generate results",
             "10. Handle Error - Error recovery and cleanup"
         ]
@@ -94,12 +94,16 @@ def display_code_healer_workflow_diagram():
         print("\n🔗 Conditional Edges:")
         print("-" * 50)
         edges = [
-            "• More Fix Groups? → Continue processing next group",
-            "• All Groups Done? → Finalize workflow",
-            "• Error? → Handle error and cleanup",
-            "• Fix Generation Failed? → Error handler",
-            "• Git Operations Failed? → Error handler",
-            "• Validation Failed? → Error handler"
+            "• initialize → validate_fix_plans (always)",
+            "• validate_fix_plans → create_branch (if valid) | error (if failed)",
+            "• create_branch → apply_fixes (if successful) | error (if failed)",
+            "• apply_fixes → validate_changes (if successful) | error (if failed)",
+            "• validate_changes → maven_clean_build (if valid) | error (if failed)",
+            "• maven_clean_build → commit_and_push (always - skips if build tool missing)",
+            "• commit_and_push → create_merge_request (if successful) | error (if failed)",
+            "• create_merge_request → finalize (always)",
+            "• Any error → handle_error → END",
+            "• finalize → END"
         ]
 
         for edge in edges:
@@ -109,13 +113,15 @@ def display_code_healer_workflow_diagram():
         print("-" * 50)
         characteristics = [
             "• Processes fix plans from Bug Hunter Agent",
-            "• Groups similar fixes for efficient batch processing",
-            "• Validates all generated code for syntax and security",
-            "• Creates separate Git branches for each fix group",
-            "• Automatically creates merge requests for review",
-            "• Handles partial failures gracefully",
-            "• Provides detailed logging and metrics",
-            "• Supports rollback via Git version control"
+            "• Single branch atomic fixes strategy (timestamp-based naming)",
+            "• Validates all applied code for syntax and security",
+            "• Intelligent Maven clean build (Maven/Gradle/npm detection)",
+            "• Graceful handling when build tools are missing",
+            "• Automatically creates GitLab merge requests",
+            "• No backup files created (cleaner workflow)",
+            "• Enhanced file path resolution for different project structures",
+            "• Comprehensive error handling and recovery",
+            "• Detailed JSON logging and metrics tracking"
         ]
 
         for char in characteristics:
